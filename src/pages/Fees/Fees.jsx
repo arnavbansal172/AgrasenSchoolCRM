@@ -35,13 +35,35 @@ export default function Fees() {
         const formData = new FormData(e.target);
         const data = Object.fromEntries(formData);
 
+        const receiptNo = `REC-${Date.now().toString().slice(-6)}`;
         await db.fees.add({
             studentId: parseInt(data.studentId),
             amount: parseInt(data.amount),
             method: data.method,
             date: data.date,
-            receiptNo: `REC-${Date.now().toString().slice(-6)}`
+            receiptNo: receiptNo
         });
+
+        const student = validStudents.find(s => s.id === parseInt(data.studentId));
+        if (student) {
+            try {
+                await fetch('http://localhost:3001/api/fees', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        studentId: student.id,
+                        grNo: student.grNo,
+                        name: student.name,
+                        amount: parseInt(data.amount),
+                        method: data.method,
+                        date: data.date,
+                        receiptNo: receiptNo
+                    })
+                });
+            } catch (err) {
+                console.error('Local server sync failed', err);
+            }
+        }
 
         setShowForm(false);
         e.target.reset();

@@ -30,6 +30,25 @@ export default function Attendance() {
                 status: newStatus
             });
         }
+
+        const student = students.find(s => s.id === studentId);
+        if (student) {
+            try {
+                await fetch('http://localhost:3001/api/attendance', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        studentId,
+                        grNo: student.grNo,
+                        name: student.name,
+                        date: selectedDate,
+                        status: newStatus
+                    })
+                });
+            } catch (err) {
+                console.error('Local server sync failed', err);
+            }
+        }
     };
 
     const getStatus = (studentId) => {

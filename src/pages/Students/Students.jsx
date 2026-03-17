@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../../db/db';
-import { Plus, Search, UserPlus } from 'lucide-react';
+import { Plus, Search, UserPlus, History, X } from 'lucide-react';
 
 export default function Students() {
     const [showForm, setShowForm] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
+    const [historyModal, setHistoryModal] = useState({ isOpen: false, data: null, title: '' });
 
     // Fetch students from IndexedDB
     const students = useLiveQuery(
@@ -31,8 +32,44 @@ export default function Students() {
             createdAt: new Date().toISOString()
         });
 
+        // Sync to local file server
+        try {
+            await fetch('http://localhost:3001/api/students', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: Date.now(),
+                    grNo: data.grNo,
+                    name: data.name,
+                    grade: data.grade,
+                    status: 'Active'
+                })
+            });
+        } catch (err) {
+            console.error('Local server sync failed:', err);
+        }
+
         setShowForm(false);
         e.target.reset();
+    };
+
+    const fetchHistory = async (student) => {
+        try {
+            const res = await fetch(`http://localhost:3001/api/history/${student.grNo}/${student.name}`);
+            const data = await res.json();
+            setHistoryModal({
+                isOpen: true,
+                title: `${student.name} (GR: ${student.grNo})`,
+                data: data.content || data.error
+            });
+        } catch (err) {
+            console.error('Failed to fetch history', err);
+            setHistoryModal({
+                isOpen: true,
+                title: `${student.name} (GR: ${student.grNo})`,
+                data: 'Could not connect to local server to retrieve history.'
+            });
+        }
     };
 
     return (
@@ -139,7 +176,12 @@ export default function Students() {
                                             </span>
                                         </td>
                                         <td className="px-6 py-4 text-right">
-                                            <button className="text-indigo-600 hover:text-indigo-900 font-medium">View & Edit</button>
+                                            <button
+                                                onClick={() => fetchHistory(student)}
+                                                className="text-slate-600 hover:text-indigo-600 flex items-center justify-end gap-1.5 ml-auto font-medium transition-colors"
+                                            >
+                                                <History size={16} /> Get History
+                                            </button>
                                         </td>
                                     </tr>
                                 ))
@@ -148,6 +190,28 @@ export default function Students() {
                     </table>
                 </div>
             </div>
+
+            {/* History Modal */}
+            {historyModal.isOpen && (
+                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[85vh] flex flex-col animate-in zoom-in-95 duration-200">
+                        <div className="flex justify-between items-center p-6 border-b border-slate-100">
+                            <h3 className="text-xl font-bold tracking-tight text-slate-900">
+                                Record History: {historyModal.title}
+                            </h3>
+                            <button
+                                onClick={() => setHistoryModal({ isOpen: false, data: null, title: '' })}
+                                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors"
+                            >
+                                <X size={24} />
+                            </button>
+                        </div>
+                        <div className="p-6 overflow-y-auto flex-1 bg-slate-50/50 font-mono text-sm whitespace-pre-wrap text-slate-700 leading-relaxed rounded-b-2xl">
+                            {historyModal.data}
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
