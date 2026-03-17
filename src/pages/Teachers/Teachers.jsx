@@ -20,6 +20,22 @@ export default function Teachers() {
             status: 'Active'
         });
 
+        // Sync to local file server
+        try {
+            await fetch('http://localhost:3001/api/teachers', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    enrollmentPerSoftech: data.enrollment,
+                    name: data.name,
+                    subject: data.subject,
+                    status: 'Active'
+                })
+            });
+        } catch (err) {
+            console.error('Local server sync failed:', err);
+        }
+
         setShowForm(false);
         e.target.reset();
     };

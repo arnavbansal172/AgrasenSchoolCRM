@@ -145,7 +145,77 @@ app.post('/api/fees', async (req, res) => {
     }
 });
 
-// 5. GET STUDENT HISTORY (Read Markdown)
+// 5. ENROLL TEACHER
+app.post('/api/teachers', async (req, res) => {
+    const { enrollmentPerSoftech, name, subject, status } = req.body;
+
+    try {
+        const writer = getCsvWriter('teachers.csv', [
+            { id: 'enrollmentPerSoftech', title: 'ENROLLMENT_SOFTECH' },
+            { id: 'name', title: 'FULL_NAME' },
+            { id: 'subject', title: 'PRIMARY_SUBJECT' },
+            { id: 'status', title: 'STATUS' },
+            { id: 'date', title: 'ENROLLMENT_DATE' }
+        ]);
+
+        await writer.writeRecords([{
+            enrollmentPerSoftech, name, subject, status,
+            date: new Date().toISOString()
+        }]);
+
+        res.status(201).json({ success: true, message: 'Teacher saved to file.' });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to write teacher data' });
+    }
+});
+
+// 6. LOG RESULTS/GRADES
+app.post('/api/results', async (req, res) => {
+    const { studentId, grNo, name, term, subjects, total } = req.body;
+
+    try {
+        const writer = getCsvWriter('results.csv', [
+            { id: 'grNo', title: 'GR_NUMBER' },
+            { id: 'name', title: 'NAME' },
+            { id: 'term', title: 'TERM' },
+            { id: 'total', title: 'TOTAL_MARKS' },
+            { id: 'date', title: 'DATE' }
+        ]);
+
+        await writer.writeRecords([{ grNo, name, term, total, date: new Date().toISOString() }]);
+
+        const subjectDetails = Object.entries(subjects).map(([sub, mark]) => `${sub}: ${mark}`).join(', ');
+        appendToStudentHistory(grNo, name, `**Result (${term}):** Achieved total ${total}. Details: ${subjectDetails}`);
+
+        res.status(201).json({ success: true, message: 'Result logged.' });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to write result' });
+    }
+});
+
+// 7. GENERATE LEAVING CERTIFICATE
+app.post('/api/lc', async (req, res) => {
+    const { grNo, name, dateOfLeaving, reason } = req.body;
+
+    try {
+        const writer = getCsvWriter('lc_records.csv', [
+            { id: 'grNo', title: 'GR_NUMBER' },
+            { id: 'name', title: 'NAME' },
+            { id: 'dateOfLeaving', title: 'DATE_OF_LEAVING' },
+            { id: 'reason', title: 'REASON' }
+        ]);
+
+        await writer.writeRecords([{ grNo, name, dateOfLeaving, reason }]);
+
+        appendToStudentHistory(grNo, name, `**Leaving Certificate Issued:** Left school on ${dateOfLeaving}. Reason: ${reason}`);
+
+        res.status(201).json({ success: true, message: 'LC record saved.' });
+    } catch (err) {
+        res.status(500).json({ error: 'Failed to write LC record' });
+    }
+});
+
+// 8. GET STUDENT HISTORY (Read Markdown)
 app.get('/api/history/:grNo/:name', (req, res) => {
     const { grNo, name } = req.params;
     const safeName = name.replace(/[^a-z0-9]/gi, '_').toLowerCase();

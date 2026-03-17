@@ -7,6 +7,7 @@ export default function Students() {
     const [showForm, setShowForm] = useState(false);
     const [searchQuery, setSearchQuery] = useState('');
     const [historyModal, setHistoryModal] = useState({ isOpen: false, data: null, title: '' });
+    const [lcModal, setLcModal] = useState({ isOpen: false, student: null });
 
     // Fetch students from IndexedDB
     const students = useLiveQuery(
@@ -69,6 +70,34 @@ export default function Students() {
                 title: `${student.name} (GR: ${student.grNo})`,
                 data: 'Could not connect to local server to retrieve history.'
             });
+        }
+    };
+
+    const issueLC = async (e) => {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        const data = Object.fromEntries(formData);
+        const { student } = lcModal;
+
+        const lcData = {
+            grNo: student.grNo,
+            name: student.name,
+            dateOfLeaving: data.dateOfLeaving,
+            reason: data.reason
+        };
+
+        try {
+            await fetch('http://localhost:3001/api/lc', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(lcData)
+            });
+            await db.students.update(student.id, { status: 'Left' });
+            alert('Leaving Certificate issued and recorded in history!');
+            setLcModal({ isOpen: false, student: null });
+        } catch (err) {
+            console.error('Failed to issue LC', err);
+            alert('Local server sync failed. Could not issue LC.');
         }
     };
 
@@ -175,10 +204,16 @@ export default function Students() {
                                                 {student.status}
                                             </span>
                                         </td>
-                                        <td className="px-6 py-4 text-right">
+                                        <td className="px-6 py-4 text-right flex items-center justify-end gap-3">
+                                            <button
+                                                onClick={() => setLcModal({ isOpen: true, student })}
+                                                className="text-amber-600 hover:text-amber-700 font-medium text-xs border border-amber-200 bg-amber-50 px-2 py-1 rounded transition-colors"
+                                            >
+                                                Issue LC
+                                            </button>
                                             <button
                                                 onClick={() => fetchHistory(student)}
-                                                className="text-slate-600 hover:text-indigo-600 flex items-center justify-end gap-1.5 ml-auto font-medium transition-colors"
+                                                className="text-slate-600 hover:text-indigo-600 flex items-center justify-end gap-1.5 font-medium transition-colors"
                                             >
                                                 <History size={16} /> Get History
                                             </button>
@@ -209,6 +244,32 @@ export default function Students() {
                         <div className="p-6 overflow-y-auto flex-1 bg-slate-50/50 font-mono text-sm whitespace-pre-wrap text-slate-700 leading-relaxed rounded-b-2xl">
                             {historyModal.data}
                         </div>
+                    </div>
+                </div>
+            )}
+
+            {/* LC Modal */}
+            {lcModal.isOpen && (
+                <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                    <div className="bg-white rounded-2xl shadow-xl w-full max-w-md animate-in zoom-in-95 duration-200">
+                        <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+                            <h3 className="text-xl font-bold text-slate-900">Issue Leaving Certificate</h3>
+                            <button onClick={() => setLcModal({ isOpen: false, student: null })}><X /></button>
+                        </div>
+                        <form onSubmit={issueLC} className="p-6 space-y-4">
+                            <p className="text-sm text-slate-500 mb-4">You are issuing an LC for <strong>{lcModal.student?.name}</strong>. This will mark them as "Left" in the system.</p>
+                            <div>
+                                <label className="block text-sm font-semibold text-slate-700 mb-1">Date of Leaving</label>
+                                <input type="date" name="dateOfLeaving" required className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" defaultValue={new Date().toISOString().split('T')[0]} />
+                            </div>
+                            <div>
+                                <label className="block text-sm font-semibold text-slate-700 mb-1">Reason for Leaving</label>
+                                <textarea name="reason" required className="w-full px-4 py-2 border border-slate-200 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none h-24" placeholder="e.g. Completed Grade 10, Relocation..."></textarea>
+                            </div>
+                            <button type="submit" className="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-3 rounded-xl transition-all">
+                                Generate & Record LC
+                            </button>
+                        </form>
                     </div>
                 </div>
             )}

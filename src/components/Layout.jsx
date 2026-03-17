@@ -51,6 +51,7 @@ export default function Layout() {
                     <Link onClick={() => setIsMobileMenuOpen(false)} to="/attendance" className="block px-4 py-2.5 rounded-lg hover:bg-indigo-800 transition-colors font-medium">Attendance</Link>
                     <Link onClick={() => setIsMobileMenuOpen(false)} to="/teachers" className="block px-4 py-2.5 rounded-lg hover:bg-indigo-800 transition-colors font-medium">Teachers</Link>
                     <Link onClick={() => setIsMobileMenuOpen(false)} to="/fees" className="block px-4 py-2.5 rounded-lg hover:bg-indigo-800 transition-colors font-medium">Fees</Link>
+                    <Link onClick={() => setIsMobileMenuOpen(false)} to="/results" className="block px-4 py-2.5 rounded-lg hover:bg-indigo-800 transition-colors font-medium">Results</Link>
                     <Link onClick={() => setIsMobileMenuOpen(false)} to="/reports" className="block px-4 py-2.5 rounded-lg hover:bg-indigo-800 transition-colors font-medium">Reports</Link>
                 </nav>
 
