@@ -4,237 +4,138 @@ const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
 const { createObjectCsvWriter } = require('csv-writer');
-const csvParser = require('csv-parser');
 
 const app = express();
-const PORT = 3001;
 
-// Middleware
-app.use(cors());
-app.use(bodyParser.json());
+// ── CONFIGURATION ────────────────────────────────────────────────────────────
+// We use Port 3002 to avoid conflicts with common dev processes on 3001.
+const PORT = 3002;
 
-// Paths
+// Standard directory for storing school ledger files.
 const DATA_DIR = path.join(__dirname, 'data');
-const STUDENTS_DIR = path.join(DATA_DIR, 'students');
 
-// Ensure directories exist
+// Ensure the data directory exists.
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-if (!fs.existsSync(STUDENTS_DIR)) fs.mkdirSync(STUDENTS_DIR, { recursive: true });
 
-// --- Helper Functions ---
+// The Master Registry file (JSON format) containing all synced school data.
+const DB_FILE = path.join(DATA_DIR, 'master_db.json');
 
-// Get CSV Writer for a specific file
-const getCsvWriter = (filename, headers) => {
-    const filePath = path.join(DATA_DIR, filename);
-    const fileExists = fs.existsSync(filePath);
-    return createObjectCsvWriter({
-        path: filePath,
-        header: headers,
-        append: fileExists
-    });
+// ── SYNC REGISTRY (The In-Memory Master State) ────────────────────────────────
+// This object serves as the "Single Source of Truth" for all connected devices.
+// Format: { tableName: { record_id: record_data } }
+let dbState = {};
+
+// On startup: Load existing school data from disk into memory.
+if (fs.existsSync(DB_FILE)) {
+  try {
+    dbState = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8'));
+    console.log(`✓ Loaded registry: ${Object.keys(dbState).length} tables found.`);
+  } catch (err) {
+    console.error('✗ Error loading master_db.json. Starting fresh.', err);
+  }
+}
+
+// ── DISK PERSISTENCE: THROTTLED SAVING ───────────────────────────────────────
+// We wait 1 second after a change before writing to the hard drive. 
+// This prevents system slowdown when 18 users are typing simultaneously.
+let saveTimeout = null;
+const scheduleSave = () => {
+  if (saveTimeout) clearTimeout(saveTimeout);
+  saveTimeout = setTimeout(() => {
+    fs.writeFileSync(DB_FILE, JSON.stringify(dbState, null, 2));
+    saveTimeout = null;
+  }, 1000); 
 };
 
-// Write to individual Student Markdown File
-const appendToStudentHistory = (grNo, name, entry) => {
-    const safeName = name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-    const filename = `GR${grNo}_${safeName}.md`;
-    const filePath = path.join(STUDENTS_DIR, filename);
+// ── MIDDLEWARE ───────────────────────────────────────────────────────────────
+app.use(cors()); // Allow mobile browsers to connect to this machine
+app.use(bodyParser.json({ limit: '50mb' })); // Allow large batches of school data
 
-    const timestamp = new Date().toLocaleString();
-    const logEntry = `\n### [${timestamp}]\n${entry}\n`;
-
-    if (!fs.existsSync(filePath)) {
-        const header = `# Student Record: ${name} (GR: ${grNo})\n\nThis document tracks all activity, attendance, and fee history for the student.\n`;
-        fs.writeFileSync(filePath, header + logEntry);
-    } else {
-        fs.appendFileSync(filePath, logEntry);
-    }
-};
-
-// --- Endpoints ---
-
-// 1. ADD STUDENT
-app.post('/api/students', async (req, res) => {
-    const { id, grNo, name, grade, status } = req.body;
-
-    try {
-        const writer = getCsvWriter('students.csv', [
-            { id: 'id', title: 'INTERNAL_ID' },
-            { id: 'grNo', title: 'GR_NUMBER' },
-            { id: 'name', title: 'FULL_NAME' },
-            { id: 'grade', title: 'CLASS_GRADE' },
-            { id: 'status', title: 'STATUS' },
-            { id: 'date', title: 'REGISTRATION_DATE' }
-        ]);
-
-        await writer.writeRecords([{
-            id, grNo, name, grade, status,
-            date: new Date().toISOString()
-        }]);
-
-        // Create individual MD file
-        appendToStudentHistory(grNo, name, `**Registered** in Class ${grade}. Status set to ${status}.`);
-
-        res.status(201).json({ success: true, message: 'Student saved to file.' });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Failed to write student data' });
-    }
+// ── API: UNIVERSAL PULL (Downstream Sync) ────────────────────────────────────
+/* 
+  GET /api/sync/all
+  Used by staff devices to grab the latest copy of the entire school record.
+*/
+app.get('/api/sync/all', (req, res) => {
+  res.json(dbState);
 });
 
-// 2. GET ALL STUDENTS (From CSV)
-app.get('/api/students', (req, res) => {
-    const results = [];
-    const filePath = path.join(DATA_DIR, 'students.csv');
+// ── API: UNIVERSAL PUSH (Upstream Sync) ──────────────────────────────────────
+/*
+  POST /api/sync/mutate
+  Receives a batch of changes (Create, Update, Delete) from a staff device.
+*/
+app.post('/api/sync/mutate', (req, res) => {
+  const { mutations } = req.body;
+  
+  // Basic safety check for data array
+  if (!Array.isArray(mutations)) return res.status(400).json({ error: 'Expected array of mutations' });
 
-    if (!fs.existsSync(filePath)) return res.json([]);
+  for (const m of mutations) {
+    const { table, action, data } = m;
+    
+    // Ensure the table exists in our master registry
+    if (!dbState[table]) dbState[table] = {};
 
-    fs.createReadStream(filePath)
-        .pipe(csvParser())
-        .on('data', (data) => results.push(data))
-        .on('end', () => res.json(results))
-        .on('error', (err) => res.status(500).json({ error: err.message }));
+    if (action === 'put') {
+      // Upsert: Create or Update the record by its primary ID
+      dbState[table][data.id] = data;
+    } else if (action === 'delete') {
+      // Delete: Remove the record from the registry
+      delete dbState[table][data]; // Here, data is the record's primary ID
+    }
+  }
+
+  // Trigger throttled save to disk
+  scheduleSave();
+  res.json({ ok: true, processed: mutations.length });
 });
 
+// ── API: DYNAMIC EXPORTS (For Accountant CSV Reports) ───────────────────────
+/*
+  GET /api/export/:table
+  Converts any school table (e.g. 'feePayments') into a downloadable CSV file.
+*/
+app.get('/api/export/:table', async (req, res) => {
+  const tableName = req.params.table;
+  const recordsObj = dbState[tableName];
+  
+  if (!recordsObj || Object.keys(recordsObj).length === 0) {
+    return res.status(404).json({ error: 'No data exists for this table' });
+  }
 
-// 3. LOG ATTENDANCE
-app.post('/api/attendance', async (req, res) => {
-    const { studentId, grNo, name, date, status } = req.body;
+  const records = Object.values(recordsObj);
+  
+  // Dynamically extract CSV headers from the first data record found.
+  const headers = Object.keys(records[0]).map(k => ({ id: k, title: k.toUpperCase() }));
+  
+  const tmpCsvFile = path.join(DATA_DIR, `export_${tableName}_tmp.csv`);
+  const writer = createObjectCsvWriter({ path: tmpCsvFile, header: headers });
+  
+  // Generate the physical CSV file
+  await writer.writeRecords(records);
 
-    try {
-        const writer = getCsvWriter('attendance.csv', [
-            { id: 'studentId', title: 'INTERNAL_ID' },
-            { id: 'grNo', title: 'GR_NUMBER' },
-            { id: 'name', title: 'NAME' },
-            { id: 'date', title: 'DATE' },
-            { id: 'status', title: 'STATUS' }
-        ]);
-
-        await writer.writeRecords([{ studentId, grNo, name, date, status }]);
-
-        appendToStudentHistory(grNo, name, `**Attendance:** Marked as *${status}* on ${date}`);
-
-        res.status(201).json({ success: true, message: 'Attendance logged.' });
-    } catch (err) {
-        res.status(500).json({ error: 'Failed to write attendance' });
-    }
+  // Set headers to trigger a download window in the user's browser
+  res.setHeader('Content-Disposition', `attachment; filename="${tableName}_export.csv"`);
+  res.setHeader('Content-Type', 'text/csv');
+  
+  // Stream the file directly to the client
+  const stream = fs.createReadStream(tmpCsvFile);
+  stream.pipe(res);
+  
+  // Clean up the temporary CSV file after sending
+  stream.on('end', () => {
+    try { fs.unlinkSync(tmpCsvFile); } catch(e) {} 
+  });
 });
 
-// 4. RECORD FEE PAYMENT
-app.post('/api/fees', async (req, res) => {
-    const { studentId, grNo, name, amount, method, date, receiptNo } = req.body;
+// ── SERVER BOOTSTRAP ──────────────────────────────────────────────────────────
+// Simple health check for network debugging
+app.get('/api/health', (req, res) => res.json({ status: 'ok', time: new Date().toISOString() }));
 
-    try {
-        const writer = getCsvWriter('fees.csv', [
-            { id: 'receiptNo', title: 'RECEIPT_NO' },
-            { id: 'studentId', title: 'INTERNAL_ID' },
-            { id: 'grNo', title: 'GR_NUMBER' },
-            { id: 'name', title: 'NAME' },
-            { id: 'amount', title: 'AMOUNT_PAID' },
-            { id: 'method', title: 'PAYMENT_METHOD' },
-            { id: 'date', title: 'DATE' }
-        ]);
-
-        await writer.writeRecords([{ receiptNo, studentId, grNo, name, amount, method, date }]);
-
-        appendToStudentHistory(grNo, name, `**Fee Payment:** Collected **₹${amount}** via ${method}. (Receipt: ${receiptNo})`);
-
-        res.status(201).json({ success: true, message: 'Fee recorded.' });
-    } catch (err) {
-        res.status(500).json({ error: 'Failed to write fee record' });
-    }
-});
-
-// 5. ENROLL TEACHER
-app.post('/api/teachers', async (req, res) => {
-    const { enrollmentPerSoftech, name, subject, status } = req.body;
-
-    try {
-        const writer = getCsvWriter('teachers.csv', [
-            { id: 'enrollmentPerSoftech', title: 'ENROLLMENT_SOFTECH' },
-            { id: 'name', title: 'FULL_NAME' },
-            { id: 'subject', title: 'PRIMARY_SUBJECT' },
-            { id: 'status', title: 'STATUS' },
-            { id: 'date', title: 'ENROLLMENT_DATE' }
-        ]);
-
-        await writer.writeRecords([{
-            enrollmentPerSoftech, name, subject, status,
-            date: new Date().toISOString()
-        }]);
-
-        res.status(201).json({ success: true, message: 'Teacher saved to file.' });
-    } catch (err) {
-        res.status(500).json({ error: 'Failed to write teacher data' });
-    }
-});
-
-// 6. LOG RESULTS/GRADES
-app.post('/api/results', async (req, res) => {
-    const { studentId, grNo, name, term, subjects, total } = req.body;
-
-    try {
-        const writer = getCsvWriter('results.csv', [
-            { id: 'grNo', title: 'GR_NUMBER' },
-            { id: 'name', title: 'NAME' },
-            { id: 'term', title: 'TERM' },
-            { id: 'total', title: 'TOTAL_MARKS' },
-            { id: 'date', title: 'DATE' }
-        ]);
-
-        await writer.writeRecords([{ grNo, name, term, total, date: new Date().toISOString() }]);
-
-        const subjectDetails = Object.entries(subjects).map(([sub, mark]) => `${sub}: ${mark}`).join(', ');
-        appendToStudentHistory(grNo, name, `**Result (${term}):** Achieved total ${total}. Details: ${subjectDetails}`);
-
-        res.status(201).json({ success: true, message: 'Result logged.' });
-    } catch (err) {
-        res.status(500).json({ error: 'Failed to write result' });
-    }
-});
-
-// 7. GENERATE LEAVING CERTIFICATE
-app.post('/api/lc', async (req, res) => {
-    const { grNo, name, dateOfLeaving, reason } = req.body;
-
-    try {
-        const writer = getCsvWriter('lc_records.csv', [
-            { id: 'grNo', title: 'GR_NUMBER' },
-            { id: 'name', title: 'NAME' },
-            { id: 'dateOfLeaving', title: 'DATE_OF_LEAVING' },
-            { id: 'reason', title: 'REASON' }
-        ]);
-
-        await writer.writeRecords([{ grNo, name, dateOfLeaving, reason }]);
-
-        appendToStudentHistory(grNo, name, `**Leaving Certificate Issued:** Left school on ${dateOfLeaving}. Reason: ${reason}`);
-
-        res.status(201).json({ success: true, message: 'LC record saved.' });
-    } catch (err) {
-        res.status(500).json({ error: 'Failed to write LC record' });
-    }
-});
-
-// 8. GET STUDENT HISTORY (Read Markdown)
-app.get('/api/history/:grNo/:name', (req, res) => {
-    const { grNo, name } = req.params;
-    const safeName = name.replace(/[^a-z0-9]/gi, '_').toLowerCase();
-    const filePath = path.join(STUDENTS_DIR, `GR${grNo}_${safeName}.md`);
-
-    if (!fs.existsSync(filePath)) {
-        return res.json({ content: 'No historical records found for this student.' });
-    }
-
-    try {
-        const content = fs.readFileSync(filePath, 'utf8');
-        res.json({ content });
-    } catch (err) {
-        res.status(500).json({ error: 'Could not read history file' });
-    }
-});
-
-
-app.listen(PORT, () => {
-    console.log(`[Local Sync Server] Running on http://localhost:${PORT}`);
-    console.log(`[Storage] Reading/Writing to: ${DATA_DIR}`);
+// Bind the server to all network interfaces so staff on mobile can connect.
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`\n🏫 SAVM ERP - UNIVERSAL SYNC SERVER`);
+  console.log(`   Local Access   : http://localhost:${PORT}`);
+  console.log(`   Network Access : http://0.0.0.0:${PORT}\n`);
 });

@@ -1,188 +1,256 @@
 import { useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../../db/db';
-import { IndianRupee, Receipt, AlertCircle, Plus } from 'lucide-react';
+import { useAuthStore } from '../../store/authStore';
+import { GRADES, formatGrade } from '../../lib/grEngine';
+import { Plus, X, Receipt, AlertCircle, IndianRupee, Search, ChevronDown, ChevronUp } from 'lucide-react';
+
+const FEE_TYPES = ['Admission Fee', 'Monthly Tuition', 'Exam Fee', 'Other'];
+const PAYMENT_METHODS = ['Cash', 'Cheque', 'Bank Transfer', 'Online'];
 
 export default function Fees() {
-    const [showForm, setShowForm] = useState(false);
+  const { can } = useAuthStore();
+  const [showForm, setShowForm] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterGrade, setFilterGrade] = useState('All');
+  const [expandedId, setExpandedId] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState({ studentId: '', feeType: 'Monthly Tuition', amount: '', method: 'Cash', date: new Date().toISOString().split('T')[0], notes: '' });
 
-    const students = useLiveQuery(() => db.students.toArray()) || [];
-    const validStudents = students.filter(s => s && s.id);
-    const fees = useLiveQuery(() => db.fees.toArray()) || [];
+  const canRecord = can('fees.record');
 
-    // Create a combined ledger view
-    const ledger = validStudents.map(student => {
-        // Basic fee structure: Class 1 = 10k, Class 2 = 12k, etc.
-        const expectedFee = parseInt(student.grade) * 2000 + 8000;
+  const activeStudents = useLiveQuery(() =>
+    db.students.where({ admissionStatus: 'Active' }).toArray()
+  ) || [];
 
-        // Calculate total paid by this student
-        const studentPayments = fees.filter(f => f.studentId === student.id);
-        const totalPaid = studentPayments.reduce((acc, curr) => acc + (parseInt(curr.amount) || 0), 0);
+  const feePayments = useLiveQuery(() => db.feePayments.toArray()) || [];
+  const feeStructure = useLiveQuery(() => db.feeStructure.toArray()) || [];
 
-        const pending = expectedFee - totalPaid;
+  const getStructure = (grade) => feeStructure.find(f => f.grade === grade);
 
-        return {
-            ...student,
-            expectedFee,
-            totalPaid,
-            pending,
-            payments: studentPayments
-        };
+  // Ledger: one row per active student
+  const ledger = activeStudents
+    .filter(s => {
+      const matchSearch = !searchQuery
+        || s.name.toLowerCase().includes(searchQuery.toLowerCase())
+        || (s.grNo && s.grNo.toLowerCase().includes(searchQuery.toLowerCase()));
+      const matchGrade = filterGrade === 'All' || s.grade === filterGrade;
+      return matchSearch && matchGrade;
+    })
+    .map(student => {
+      const structure = getStructure(student.grade);
+      // Annual expected: admission + 12 months + exam
+      const expectedAnnual = (structure?.admissionFee || 0) + (structure?.monthlyFee || 0) * 12 + (structure?.examFee || 0);
+      const payments = feePayments.filter(f => f.studentId === student.id);
+      const totalPaid = payments.reduce((s, f) => s + (parseInt(f.amount) || 0), 0);
+      const balance = Math.max(0, expectedAnnual - totalPaid);
+      return { ...student, expectedAnnual, totalPaid, balance, payments };
     });
 
-    const handleRecordPayment = async (e) => {
-        e.preventDefault();
-        const formData = new FormData(e.target);
-        const data = Object.fromEntries(formData);
+  const totalCollected = ledger.reduce((s, r) => s + r.totalPaid, 0);
+  const totalPending   = ledger.reduce((s, r) => s + r.balance, 0);
 
-        const receiptNo = `REC-${Date.now().toString().slice(-6)}`;
-        await db.fees.add({
-            studentId: parseInt(data.studentId),
-            amount: parseInt(data.amount),
-            method: data.method,
-            date: data.date,
-            receiptNo: receiptNo
-        });
+  const handleRecord = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const receiptNo = `REC-${Date.now().toString().slice(-7)}`;
+      await db.feePayments.add({
+        studentId: parseInt(form.studentId),
+        feeType: form.feeType,
+        amount: parseInt(form.amount),
+        method: form.method,
+        date: form.date,
+        notes: form.notes,
+        receiptNo,
+        createdAt: new Date().toISOString(),
+      });
+      setForm({ studentId: '', feeType: 'Monthly Tuition', amount: '', method: 'Cash', date: new Date().toISOString().split('T')[0], notes: '' });
+      setShowForm(false);
+    } finally {
+      setSaving(false);
+    }
+  };
 
-        const student = validStudents.find(s => s.id === parseInt(data.studentId));
-        if (student) {
-            try {
-                await fetch('http://localhost:3001/api/fees', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        studentId: student.id,
-                        grNo: student.grNo,
-                        name: student.name,
-                        amount: parseInt(data.amount),
-                        method: data.method,
-                        date: data.date,
-                        receiptNo: receiptNo
-                    })
-                });
-            } catch (err) {
-                console.error('Local server sync failed', err);
-            }
-        }
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
-        setShowForm(false);
-        e.target.reset();
-    };
-
-    return (
-        <div className="space-y-6 max-w-7xl mx-auto">
-            <div className="flex justify-between items-center">
-                <div>
-                    <h2 className="text-3xl font-bold tracking-tight text-slate-900">Fee Ledger</h2>
-                    <p className="text-slate-500 mt-1">Track student payments and pending balances.</p>
-                </div>
-                <button
-                    onClick={() => setShowForm(!showForm)}
-                    className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-4 py-2 rounded-lg font-medium transition-colors shadow-sm"
-                >
-                    {showForm ? 'Cancel' : <><Plus size={20} /> Record Payment</>}
-                </button>
-            </div>
-
-            {showForm && (
-                <div className="bg-white p-6 rounded-2xl border border-emerald-200 shadow-sm mb-6 animate-in fade-in bg-emerald-50/10">
-                    <div className="flex items-center gap-3 mb-6">
-                        <div className="p-3 bg-emerald-100 text-emerald-600 rounded-xl">
-                            <IndianRupee size={24} />
-                        </div>
-                        <div>
-                            <h3 className="text-xl font-semibold text-slate-800">New Payment Receipt</h3>
-                            <p className="text-sm text-slate-500">Record a new fee collection.</p>
-                        </div>
-                    </div>
-
-                    <form onSubmit={handleRecordPayment} className="space-y-4">
-                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700 mb-1">Student *</label>
-                                <select required name="studentId" className="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-emerald-500 outline-none bg-white">
-                                    <option value="">Select Student</option>
-                                    {validStudents.map(s => (
-                                        <option key={s.id} value={s.id}>{s.name} (GR: {s.grNo})</option>
-                                    ))}
-                                </select>
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700 mb-1">Amount (₹) *</label>
-                                <input required name="amount" type="number" min="1" className="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-emerald-500 outline-none" placeholder="0.00" />
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700 mb-1">Payment Method *</label>
-                                <select required name="method" className="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-emerald-500 outline-none bg-white">
-                                    <option value="Cash">Cash</option>
-                                    <option value="Cheque">Cheque</option>
-                                    <option value="Online">Online Transfer</option>
-                                </select>
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium text-slate-700 mb-1">Date *</label>
-                                <input required name="date" type="date" defaultValue={new Date().toISOString().split('T')[0]} className="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-emerald-500 outline-none" />
-                            </div>
-                        </div>
-                        <div className="flex justify-end pt-4">
-                            <button type="submit" className="bg-emerald-600 hover:bg-emerald-700 text-white px-6 py-2 rounded-lg font-medium transition-colors shadow-sm flex items-center gap-2">
-                                <Receipt size={18} /> Generate Receipt
-                            </button>
-                        </div>
-                    </form>
-                </div>
-            )}
-
-            {/* Ledger Table */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                <div className="overflow-x-auto">
-                    <table className="w-full text-left text-sm text-slate-600">
-                        <thead className="text-xs uppercase bg-slate-50 text-slate-500 border-b border-slate-200">
-                            <tr>
-                                <th className="px-6 py-4 font-semibold">Student</th>
-                                <th className="px-6 py-4 font-semibold">Class</th>
-                                <th className="px-6 py-4 font-semibold">Total Fee</th>
-                                <th className="px-6 py-4 font-semibold">Paid</th>
-                                <th className="px-6 py-4 font-semibold">Pending</th>
-                                <th className="px-6 py-4 font-semibold text-right">Status</th>
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100">
-                            {ledger.length === 0 ? (
-                                <tr>
-                                    <td colSpan="6" className="px-6 py-12 text-center text-slate-500">
-                                        No students found. Register students first to see the fee ledger.
-                                    </td>
-                                </tr>
-                            ) : (
-                                ledger.map((record) => (
-                                    <tr key={record.id} className="hover:bg-slate-50/50 transition-colors">
-                                        <td className="px-6 py-4">
-                                            <div className="font-medium text-slate-900">{record.name}</div>
-                                            <div className="text-xs text-slate-500">GR: {record.grNo}</div>
-                                        </td>
-                                        <td className="px-6 py-4">Class {record.grade}</td>
-                                        <td className="px-6 py-4 font-medium text-slate-700">₹{record.expectedFee.toLocaleString()}</td>
-                                        <td className="px-6 py-4 font-medium text-emerald-600">₹{record.totalPaid.toLocaleString()}</td>
-                                        <td className="px-6 py-4 font-medium text-rose-600">₹{record.pending.toLocaleString()}</td>
-                                        <td className="px-6 py-4 text-right">
-                                            {record.pending === 0 ? (
-                                                <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">
-                                                    Cleared
-                                                </span>
-                                            ) : (
-                                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-700">
-                                                    <AlertCircle size={14} /> Due
-                                                </span>
-                                            )}
-                                        </td>
-                                    </tr>
-                                ))
-                            )}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">Fee Ledger</h1>
+          <p className="page-subtitle">Track student payments and outstanding balances</p>
         </div>
-    );
+        {canRecord && (
+          <button className="btn btn-primary" onClick={() => setShowForm(s => !s)}>
+            {showForm ? <X size={16} /> : <><Plus size={16} /> Record Payment</>}
+          </button>
+        )}
+      </div>
+
+      {/* Summary Stats */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: '12px' }}>
+        <div className="card" style={{ padding: '16px' }}>
+          <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>Total Collected</div>
+          <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#059669', fontFamily: 'Lexend, sans-serif' }}>₹{totalCollected.toLocaleString('en-IN')}</div>
+        </div>
+        <div className="card" style={{ padding: '16px' }}>
+          <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>Pending Dues</div>
+          <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#dc2626', fontFamily: 'Lexend, sans-serif' }}>₹{totalPending.toLocaleString('en-IN')}</div>
+        </div>
+        <div className="card" style={{ padding: '16px' }}>
+          <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>Active Students</div>
+          <div style={{ fontSize: '1.4rem', fontWeight: 800, color: '#4f46e5', fontFamily: 'Lexend, sans-serif' }}>{activeStudents.length}</div>
+        </div>
+        <div className="card" style={{ padding: '16px', background: 'linear-gradient(135deg, #fef9c3, #fef3c7)', border: '1px solid #fde68a' }}>
+          <div style={{ fontSize: '0.72rem', fontWeight: 700, color: '#78350f', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '6px' }}>⚡ Zero Fines Policy</div>
+          <div style={{ fontSize: '0.78rem', color: '#92400e', fontWeight: 600 }}>Late payments tracked, no penalties charged</div>
+        </div>
+      </div>
+
+      {/* Payment Form */}
+      {showForm && (
+        <div className="card animate-in" style={{ padding: '24px' }}>
+          <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '20px' }}>
+            <div style={{ width: '44px', height: '44px', borderRadius: '12px', background: '#ecfdf5', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#059669' }}>
+              <IndianRupee size={22} />
+            </div>
+            <div>
+              <h3 style={{ fontWeight: 700, fontSize: '1rem' }}>Record Payment</h3>
+              <p style={{ fontSize: '0.8rem', color: '#94a3b8' }}>A receipt number is auto-generated on save.</p>
+            </div>
+          </div>
+          <form onSubmit={handleRecord}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '16px', marginBottom: '16px' }}>
+              <div>
+                <label className="form-label">Student *</label>
+                <select required className="form-select" value={form.studentId} onChange={e => setForm(p => ({ ...p, studentId: e.target.value }))}>
+                  <option value="">Select student...</option>
+                  {activeStudents.map(s => (
+                    <option key={s.id} value={s.id}>{s.name} (GR: {s.grNo}) — {formatGrade(s.grade)}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="form-label">Fee Type *</label>
+                <select className="form-select" value={form.feeType} onChange={e => setForm(p => ({ ...p, feeType: e.target.value }))}>
+                  {FEE_TYPES.map(t => <option key={t}>{t}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="form-label">Amount (₹) *</label>
+                <input required className="form-input" type="number" min="1" value={form.amount} onChange={e => setForm(p => ({ ...p, amount: e.target.value }))} placeholder="Enter amount" />
+              </div>
+              <div>
+                <label className="form-label">Payment Method *</label>
+                <select className="form-select" value={form.method} onChange={e => setForm(p => ({ ...p, method: e.target.value }))}>
+                  {PAYMENT_METHODS.map(m => <option key={m}>{m}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="form-label">Date *</label>
+                <input className="form-input" type="date" value={form.date} onChange={e => setForm(p => ({ ...p, date: e.target.value }))} required />
+              </div>
+              <div>
+                <label className="form-label">Notes</label>
+                <input className="form-input" value={form.notes} onChange={e => setForm(p => ({ ...p, notes: e.target.value }))} placeholder="Optional note..." />
+              </div>
+            </div>
+            <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+              <button type="button" className="btn btn-ghost" onClick={() => setShowForm(false)}>Cancel</button>
+              <button type="submit" className="btn btn-success" disabled={saving}>
+                <Receipt size={16} />{saving ? 'Saving...' : 'Record & Generate Receipt'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
+      {/* Filters */}
+      <div className="card" style={{ padding: '14px 16px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
+        <div style={{ position: 'relative', flex: 1, minWidth: '200px' }}>
+          <Search size={16} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }} />
+          <input className="form-input" style={{ paddingLeft: '34px' }} placeholder="Search student or GR..." value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
+        </div>
+        <select className="form-select" style={{ width: 'auto' }} value={filterGrade} onChange={e => setFilterGrade(e.target.value)}>
+          <option value="All">All Grades</option>
+          {GRADES.map(g => <option key={g} value={g}>{formatGrade(g)}</option>)}
+        </select>
+      </div>
+
+      {/* Ledger Table */}
+      <div className="table-container card">
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Student</th>
+              <th>Grade</th>
+              <th>Annual Fee</th>
+              <th>Paid</th>
+              <th>Balance</th>
+              <th>Status</th>
+              <th style={{ textAlign: 'right' }}>Payments</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ledger.length === 0 ? (
+              <tr>
+                <td colSpan={7}>
+                  <div className="empty-state">
+                    <div className="empty-state-title">No active students found</div>
+                    <div className="empty-state-desc">Activate students in the Students page first.</div>
+                  </div>
+                </td>
+              </tr>
+            ) : ledger.map(record => (
+              <>
+                <tr key={record.id}>
+                  <td>
+                    <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{record.name}</div>
+                    <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}><span className="gr-number">{record.grNo}</span></div>
+                  </td>
+                  <td><span className="grade-pill">{formatGrade(record.grade)}</span></td>
+                  <td style={{ fontWeight: 600 }}>₹{record.expectedAnnual.toLocaleString('en-IN')}</td>
+                  <td style={{ fontWeight: 700, color: '#059669' }}>₹{record.totalPaid.toLocaleString('en-IN')}</td>
+                  <td style={{ fontWeight: 700, color: record.balance > 0 ? '#dc2626' : '#059669' }}>
+                    {record.balance > 0 ? `₹${record.balance.toLocaleString('en-IN')}` : '—'}
+                  </td>
+                  <td>
+                    {record.balance === 0
+                      ? <span className="badge badge-cleared">Cleared</span>
+                      : <span className="badge badge-due"><AlertCircle size={10} /> Due</span>}
+                  </td>
+                  <td style={{ textAlign: 'right' }}>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => setExpandedId(expandedId === record.id ? null : record.id)}
+                    >
+                      {record.payments.length} receipts {expandedId === record.id ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                    </button>
+                  </td>
+                </tr>
+                {expandedId === record.id && record.payments.length > 0 && (
+                  <tr key={`pay-${record.id}`} style={{ background: '#f8fafc' }}>
+                    <td colSpan={7} style={{ padding: '12px 20px' }}>
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                        {record.payments.map(p => (
+                          <div key={p.id} style={{ display: 'flex', gap: '16px', fontSize: '0.82rem', color: '#475569', alignItems: 'center' }}>
+                            <span style={{ fontFamily: 'monospace', color: '#4f46e5', fontWeight: 700 }}>{p.receiptNo}</span>
+                            <span style={{ fontWeight: 700, color: '#059669' }}>₹{parseInt(p.amount).toLocaleString('en-IN')}</span>
+                            <span>{p.feeType}</span>
+                            <span style={{ color: '#94a3b8' }}>{p.method}</span>
+                            <span style={{ color: '#94a3b8' }}>{p.date}</span>
+                            {p.notes && <span style={{ color: '#94a3b8', fontStyle: 'italic' }}>{p.notes}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }

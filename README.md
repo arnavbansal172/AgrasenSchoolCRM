@@ -1,86 +1,60 @@
-# Shri Agrasen Vidya Mandir - School Management System (SMS)
+# 🏫 Shri Agrasen Vidya Mandir (SAVM) ERP
 
-A comprehensive, offline-first School Management System designed specifically for Shri Agrasen Vidya Mandir. This portal manages student registrations, tracks daily attendance, handles teacher enrollments, maintains fee ledgers, and generates real-time reports.
+A robust, offline-first School Management System designed for local network synchronization. This system allows a central Host PC to serve as the "Single Source of Truth" while enabling up to 18+ staff members to manage school data from their mobile devices simultaneously.
 
-Built with **React**, **Vite**, and **Node.js**, prioritizing portability, local network access, and physical file generation (CSV/Markdown) without relying on cloud databases.
+## 🚀 One-Click Launch
+To start the entire ERP ecosystem (Sync Server + Frontend Interface), run the following command in the terminal:
 
-## 🚀 Features
+```bash
+bash launch_erp.sh
+```
 
-*   **Student Management:** Register new students, assign GR numbers, and manage class assignments.
-*   **Attendance Tracking:** Daily, class-wise attendance marking with clear visual status indicators.
-*   **Teacher Enrollment:** Manage staff records, tracking their PER SOFTECH IDs and assigned subjects.
-*   **Fee Ledger:** Automatically calculate expected fees based on class, record payments (Cash/Cheque/Online), and track pending dues.
-*   **Local File Syncing:** Automatically generates and updates physical `students.csv`, `attendance.csv`, and `fees.csv` files on the host computer.
-*   **Student History:** Generates an individual `.md` text file for every student, aggregating all their life-cycle events (registration, attendance, fee payments) in one scannable document.
-*   **Local Network Broadcasting:** Access the portal seamlessly from any smartphone, tablet, or secondary computer connected to the same WiFi network.
-*   **PWA Ready:** Acts as a Progressive Web App capable of offline viewing and caching.
-
-## 📁 Architecture
-
-The system operates in two layers that run concurrently:
-
-1.  **Frontend (React + Vite + Dexie.js):** A completely offline-capable React application. It uses Dexie.js (IndexedDB) as a local fast-cache so the UI is instantaneous.
-2.  **Backend (Node.js + Express):** A lightweight local server that listens to the frontend and immediately writes data to the `backend/data/` folder on your laptop’s hard drive, generating the `.csv` and `.md` files.
+- **Frontend Access:** [http://localhost:5173](http://localhost:5173)
+- **Network Access:** Replace `localhost` with your PC's IP address (e.g., `http://192.168.1.5:5173`) to access from mobile phones.
 
 ---
 
-## 💻 Installation & Setup
+## 🏗️ Architecture & Technology Stack
 
-You only need **Node.js** installed on your computer to run this entire system.
+### 1. **The Sync Engine (Bidirectional)**
+Unlike traditional apps that require a constant internet connection, SAVM ERP uses an **Offline-First** architecture:
+- **Local Storage:** All actions (adding students, taking attendance) are saved instantly to the device's hard drive using `Dexie.js` (IndexedDB).
+- **Upstream Sync:** The app "beams" local changes to the Host PC whenever the network is available.
+- **Downstream Sync:** Every 10 seconds, the app pulls updates from other users to stay in sync.
 
-### 1. Prerequisite
-Ensure you have Node.js installed on your laptop. You can download it from [nodejs.org](https://nodejs.org/).
+### 2. **Universal Registry (The Backend)**
+The backend (`backend/index.js`) runs on **Port 3002**. It maintains a global `master_db.json` file. 
+- **Conflict Resolution:** Uses Primary-Key merging (BulkPut) to ensure data integrity across 18+ concurrent users.
+- **CSV Export:** The backend provides dynamic CSV generation for accountants to download fee ledgers and reports.
 
-### 2. Clone the Repository
-Open your terminal and clone this repository to your computer:
-```bash
-git clone https://github.com/arnavbansal172/AgrasenSchoolCRM.git
-cd AgrasenSchoolCRM
-```
-
-### 3. Install Dependencies
-Install all required Node modules for both the frontend and the local backend server.
-First, install the frontend dependencies in the root folder:
-```bash
-npm install
-```
-Next, navigate to the backend folder and install its dependencies:
-```bash
-cd backend
-npm install
-cd ..
-```
+### 3. **Role-Based Access Control (RBAC)**
+The system enforces strict permissions to protect student privacy:
+- **Admin**: Full system control.
+- **Principal**: Academic oversight (Results, Attendance, Teachers).
+- **Accountant**: Financial management (Fees, Salaries, Procurement).
+- **Teacher**: Classroom management (Student list, Attendance, Results).
 
 ---
 
-## 🏃‍♂️ Running the Application
-
-To launch the portal and the local file server simultaneously, run:
-
-```bash
-npm run start:local
-```
-
-### Accessing the Portal
-
-**From the Host Laptop:**
-*   Open your internet browser and visit: `http://localhost:5173`
-
-**From a Smartphone / Tablet (on the same WiFi):**
-1.  Look at the terminal output after running the command above. You will see a `Network` address (e.g., `http://192.168.1.5:5173`).
-2.  Alternatively, find your laptop's local IP address.
-3.  Open a browser on your phone and enter that exact IP address and port.
-4.  The application will automatically switch to a mobile-friendly layout and sidebar!
+## 🔑 Initial Credentials
+For first-time setup, use the Master Admin account:
+- **Login ID:** `admin`
+- **Password:** `123`
 
 ---
 
-## 📊 Where is my Data Saved?
+## 📂 Project Structure
+- **/src/db**: Database schema and initial seeding logic.
+- **/src/lib**: The core Sync Engine and GR Number generation logic.
+- **/src/pages**: Individual modules (Students, Fees, Staff, etc.).
+- **/backend**: Node.js server and the `master_db.json` data store.
 
-All data entered into the system is saved inside the `backend/data/` directory.
+---
 
-*   `backend/data/students.csv` - Open with Excel
-*   `backend/data/attendance.csv` - Open with Excel
-*   `backend/data/fees.csv` - Open with Excel
-*   `backend/data/students/*.md` - Open with Word, Notes, Pages, etc.
+## 🛠️ Maintenance & Backups
+All school data is stored in `backend/data/master_db.json`. 
+- **To Backup:** Simply copy the `master_db.json` file to a USB drive.
+- **To Restore:** Place your backed-up `master_db.json` into the `backend/data/` folder and restart the launcher.
 
-*Note: You can safely backup or copy the `backend/data/` folder to a USB drive at any time.*
+---
+**Developed with ❤️ for Shri Agrasen Vidya Mandir.**
