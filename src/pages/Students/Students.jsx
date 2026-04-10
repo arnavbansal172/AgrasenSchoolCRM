@@ -1,205 +1,223 @@
-import React, { useState } from 'react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../../db/db';
+import React, { useState, useEffect, useCallback } from 'react';
+import api from '../../lib/api';
 import { useAuthStore } from '../../store/authStore';
 import { generateGrNumber, computeRollNumbers, GRADES, formatGrade, nextGrade } from '../../lib/grEngine';
 import {
   Plus, Search, UserPlus, Users, X, Edit2, ChevronDown, ChevronUp,
-  AlertTriangle, CheckCircle, ArrowUpCircle, FileText, Hash, RefreshCw
+  AlertTriangle, CheckCircle, ArrowUpCircle, FileText, RefreshCw
 } from 'lucide-react';
-import ErrorDumper from '../../components/ErrorDumper';
 
-/* 
-  STUDENT MANAGEMENT MODULE
-  This is the core of the ERP. It handles:
-  1. Registration (New Admission)
-  2. GR Number Generation (Activation)
-  3. Automatic Roll Number Calculation
-  4. Leaving Certificate (LC) issuance with Fee Clearance checks
-  5. Bulk Class Promotion
+/*
+  STUDENT MANAGEMENT MODULE — v2.0 (PostgreSQL API)
+  
+  Changes from v1:
+  - Data fetched from PostgreSQL via REST API (not Dexie/IndexedDB)
+  - GR generation happens atomically on the server (no race conditions)
+  - All writes go to server first
 */
 
-// Configuration for student status badges (UI styling)
 const STATUS_CONFIG = {
-  'New Admission': { cls: 'badge-new',      label: 'New Admission' }, // Initial state, no GR yet
-  'Active':        { cls: 'badge-active',    label: 'Active' },        // Fully admitted with GR
-  'Inactive':      { cls: 'badge-inactive',  label: 'Inactive' },      // Suspended or on-hold
-  'Left':          { cls: 'badge-left',      label: 'Left' },          // Issued TC/LC
+  'New Admission': { cls: 'badge-new',      label: 'New Admission' },
+  'Active':        { cls: 'badge-active',    label: 'Active' },
+  'Inactive':      { cls: 'badge-inactive',  label: 'Inactive' },
+  'Left':          { cls: 'badge-left',      label: 'Left' },
 };
 
-function StudentsInner() {
-  // ── AUTH & PERMISSIONS ───────────────────────────────────────────────────
-  const { can } = useAuthStore(); // Check user permissions (e.g., can they promote?)
+export default function Students() {
+  const { can } = useAuthStore();
+  
+  // ── Data State ──────────────────────────────────────────────────────────
+  const [allStudents, setAllStudents] = useState([]);
+  const [feePayments, setFeePayments] = useState([]);
+  const [feeStructure, setFeeStructure] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  // ── UI STATE ─────────────────────────────────────────────────────────────
-  const [searchQuery, setSearchQuery] = useState('');               // Search name/GR
-  const [filterGrade, setFilterGrade] = useState('All');             // Filter by grade
-  const [filterStatus, setFilterStatus] = useState('All');           // Filter by status
-  const [showAddForm, setShowAddForm] = useState(false);             // Registration form visibility
-  const [formData, setFormData] = useState({                         // New student details
-    name: '', grade: 'KG1', parentName: '', phone: '', dob: '' 
-  });
-  const [editModal, setEditModal] = useState(null);                  // Buffer for editing status
-  const [lcModal, setLcModal] = useState(null);                      // Buffer for TC/LC process
-  const [promoteModal, setPromoteModal] = useState(false);           // Bulk promotion popup
-  const [promoteGrade, setPromoteGrade] = useState('1');            // Source grade for promotion
-  const [saving, setSaving] = useState(false);                       // DB operation loading state
-  const [expandedId, setExpandedId] = useState(null);                // Which row has info accordion open
+  // ── UI State ────────────────────────────────────────────────────────────
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterGrade, setFilterGrade] = useState('All');
+  const [filterStatus, setFilterStatus] = useState('All');
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [formData, setFormData] = useState({ name: '', grade: 'KG1', parentName: '', phone: '', dob: '' });
+  const [editModal, setEditModal] = useState(null);
+  const [lcModal, setLcModal] = useState(null);
+  const [promoteModal, setPromoteModal] = useState(false);
+  const [promoteGrade, setPromoteGrade] = useState('1');
+  const [saving, setSaving] = useState(false);
+  const [expandedId, setExpandedId] = useState(null);
 
-  // ── DATABASE QUERIES (REACTIVE) ──────────────────────────────────────────
-  // useLiveQuery ensures the table updates automatically when data changes elsewhere.
-  const rawStudents = useLiveQuery(() => db.students.toArray()) || [];
-  const allStudents = [...rawStudents].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-  const feePayments = useLiveQuery(() => db.feePayments.toArray()) || [];
-  const feeStructure = useLiveQuery(() => db.feeStructure.toArray()) || [];
+  // ── DATA LOADING ─────────────────────────────────────────────────────────
+  const loadData = useCallback(async () => {
+    try {
+      const [students, payments, structure] = await Promise.all([
+        api.students.list(),
+        api.fees.getPayments(),
+        api.fees.getStructure(),
+      ]);
+      // Sort alphabetically
+      setAllStudents([...students].sort((a, b) => (a.name || '').localeCompare(b.name || '')));
+      setFeePayments(payments);
+      setFeeStructure(structure);
+    } catch (err) {
+      console.error('Failed to load student data:', err);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
-  // ── LOGIC: FEE BALANCE CALCULATION ───────────────────────────────────────
-  // Used to prevent issuing LC if the student owes money.
+  useEffect(() => { loadData(); }, [loadData]);
+
+  // ── FEE BALANCE CALCULATION ───────────────────────────────────────────────
   const getStudentBalance = (student) => {
-    if (!student.grNo) return 0; // New Admission, no fees due yet
+    if (!student.gr_no) return 0;
     const structure = feeStructure.find(f => f.grade === student.grade);
     if (!structure) return 0;
-    const monthlyDue = (structure.monthlyFee || 0) * 12; // Flat 12-month calculation
-    const examDue = structure.examFee || 0;
-    const admitted = student.grNo ? (structure.admissionFee || 0) : 0;
-    
-    const totalDue = admitted + monthlyDue + examDue;
-    const paid = feePayments.filter(f => f.studentId === student.id)
-                          .reduce((s, f) => s + (parseInt(f.amount) || 0), 0);
+    const totalDue = (structure.admission_fee || 0) + (structure.monthly_fee || 0) * 12 + (structure.exam_fee || 0);
+    const paid = feePayments
+      .filter(f => f.student_id === student.id)
+      .reduce((s, f) => s + (parseInt(f.amount) || 0), 0);
     return Math.max(0, totalDue - paid);
   };
 
-  // ── LOGIC: FILTERING ─────────────────────────────────────────────────────
+  // ── FILTERING ─────────────────────────────────────────────────────────────
   const filtered = allStudents.filter(s => {
     const matchSearch = !searchQuery ||
       (s.name && s.name.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      (s.grNo && s.grNo.toLowerCase().includes(searchQuery.toLowerCase()));
+      (s.gr_no && s.gr_no.toLowerCase().includes(searchQuery.toLowerCase()));
     const matchGrade  = filterGrade === 'All' || s.grade === filterGrade;
-    const matchStatus = filterStatus === 'All' || s.admissionStatus === filterStatus;
+    const matchStatus = filterStatus === 'All' || s.admission_status === filterStatus;
     return matchSearch && matchGrade && matchStatus;
   });
 
-  // ── LOGIC: ROLL NUMBER MAPPING ───────────────────────────────────────────
-  // We compute roll numbers dynamically based on alphabetical order within active students of a grade.
-  const getWithRollNo = (students) => {
+  // ── ROLL NUMBERS ──────────────────────────────────────────────────────────
+  const rollMap = (() => {
     const activeByGrade = {};
-    students.filter(s => s.admissionStatus === 'Active').forEach(s => {
+    allStudents.filter(s => s.admission_status === 'Active').forEach(s => {
       const g = s.grade || 'Unknown';
       if (!activeByGrade[g]) activeByGrade[g] = [];
       activeByGrade[g].push(s);
     });
-    const rollMap = {};
-    Object.entries(activeByGrade).forEach(([grade, arr]) => {
-      computeRollNumbers(arr).forEach(s => { rollMap[s.id] = s.rollNo; });
+    const map = {};
+    Object.entries(activeByGrade).forEach(([, arr]) => {
+      computeRollNumbers(arr).forEach(s => { map[s.id] = s.rollNo; });
     });
-    return rollMap;
-  };
-  const rollMap = getWithRollNo(allStudents);
+    return map;
+  })();
 
-  // ── ACTIONS: REGISTER STUDENT ────────────────────────────────────────────
+  // ── ACTIONS ───────────────────────────────────────────────────────────────
   const handleAdd = async (e) => {
     e.preventDefault();
     setSaving(true);
     try {
-      await db.students.add({
+      await api.students.create({
         name: formData.name.trim(),
         grade: formData.grade,
         parentName: formData.parentName.trim(),
         phone: formData.phone.trim(),
-        dob: formData.dob,
-        admissionStatus: 'New Admission', // Forced start state
-        grNo: null,                       // No GR yet
-        createdAt: new Date().toISOString(),
+        dob: formData.dob || null,
       });
       setFormData({ name: '', grade: 'KG1', parentName: '', phone: '', dob: '' });
       setShowAddForm(false);
+      await loadData();
+    } catch (err) {
+      alert('Error: ' + err.message);
     } finally {
       setSaving(false);
     }
   };
 
-  // ── ACTIONS: ACTIVATE & ASSIGN GR ────────────────────────────────────────
-  // This is the "Full Admission" step. Automatically generates the next unique GR Number.
   const handleActivate = async (student) => {
-    if (student.admissionStatus === 'Active') return;
+    if (student.admission_status === 'Active') return;
     setSaving(true);
     try {
-      const grNo = await generateGrNumber(student.grade);
-      await db.students.update(student.id, { 
-        admissionStatus: 'Active', 
-        grNo, 
-        activatedAt: new Date().toISOString() 
-      });
+      await api.students.activate(student.id);
+      await loadData();
+    } catch (err) {
+      alert('Activation failed: ' + err.message);
     } finally {
       setSaving(false);
     }
   };
 
-  // ── ACTIONS: CHANGE STATUS ───────────────────────────────────────────────
   const handleStatusChange = async (student, newStatus) => {
-    if (newStatus === 'Active' && !student.grNo) {
+    if (newStatus === 'Active' && !student.gr_no) {
       await handleActivate(student);
+      setEditModal(null);
       return;
     }
-    await db.students.update(student.id, { admissionStatus: newStatus });
-    setEditModal(null);
+    try {
+      await api.students.update(student.id, { admissionStatus: newStatus });
+      setEditModal(null);
+      await loadData();
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
   };
 
-  // ── ACTIONS: ISSUE LC (Transfer Certificate) ─────────────────────────────
   const handleIssueLC = async (e) => {
     e.preventDefault();
     const form = new FormData(e.target);
     const { student } = lcModal;
     const balance = getStudentBalance(student);
-    
-    // Strict block: Cannot leave if money is owed
     if (balance > 0) {
       alert(`Cannot issue LC. Student has pending balance of ₹${balance.toLocaleString('en-IN')}.`);
       return;
     }
-
-    await db.students.update(student.id, {
-      admissionStatus: 'Left',
-      lcDate: form.get('lcDate'),
-      lcReason: form.get('lcReason'),
-    });
-    setLcModal(null);
-    alert('Leaving Certificate issued successfully.');
+    try {
+      await api.students.update(student.id, {
+        admissionStatus: 'Left',
+        lcDate: form.get('lcDate'),
+        lcReason: form.get('lcReason'),
+      });
+      setLcModal(null);
+      await loadData();
+    } catch (err) {
+      alert('Error: ' + err.message);
+    }
   };
 
-  // ── ACTIONS: BULK CLASS PROMOTION ────────────────────────────────────────
-  // Moves entire batches (e.g., all Std. 1 to Std. 2) in one click.
   const handlePromote = async () => {
     const toGrade = nextGrade(promoteGrade);
     if (!toGrade) { alert('No higher grade available.'); return; }
+    if (!confirm(`Promote all active students from ${formatGrade(promoteGrade)} → ${formatGrade(toGrade)}?`)) return;
     setSaving(true);
     try {
-      const students = await db.students.where({ grade: promoteGrade, admissionStatus: 'Active' }).toArray();
-      await Promise.all(students.map(s => db.students.update(s.id, { grade: toGrade })));
-      alert(`${students.length} students promoted from ${formatGrade(promoteGrade)} → ${formatGrade(toGrade)}`);
+      const result = await api.students.promote(promoteGrade, toGrade);
+      alert(`${result.promoted} students promoted!`);
       setPromoteModal(false);
+      await loadData();
+    } catch (err) {
+      alert('Promotion failed: ' + err.message);
     } finally {
       setSaving(false);
     }
   };
 
-  // ── PERMISSION FLAGS ─────────────────────────────────────────────────────
   const canAdd      = can('students.add');
   const canEdit     = can('students.edit');
   const canActivate = can('students.activate');
   const canLC       = can('students.issueLC');
   const canPromote  = can('students.promote');
 
-  // ── RENDER ───────────────────────────────────────────────────────────────
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '50vh', gap: '12px', color: '#94a3b8' }}>
+        <RefreshCw size={20} style={{ animation: 'spin 1s linear infinite' }} />
+        Loading student records...
+        <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+      </div>
+    );
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
 
-      {/* Header & Main Actions */}
+      {/* Header */}
       <div className="page-header">
         <div>
           <h1 className="page-title">Students</h1>
           <p className="page-subtitle">
-            {allStudents.filter(s => s.admissionStatus === 'Active').length} active · {allStudents.filter(s => s.admissionStatus === 'New Admission').length} pending activation
+            {allStudents.filter(s => s.admission_status === 'Active').length} active ·{' '}
+            {allStudents.filter(s => s.admission_status === 'New Admission').length} pending activation
           </p>
         </div>
         <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
@@ -216,7 +234,7 @@ function StudentsInner() {
         </div>
       </div>
 
-      {/* Registration Form (Collapsible) */}
+      {/* Add Form */}
       {showAddForm && (
         <div className="card animate-in" style={{ padding: '24px' }}>
           <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '20px' }}>
@@ -232,25 +250,30 @@ function StudentsInner() {
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px', marginBottom: '16px' }}>
               <div>
                 <label className="form-label">Full Name *</label>
-                <input required className="form-input" value={formData.name} onChange={e => setFormData(p => ({ ...p, name: e.target.value }))} placeholder="e.g. Anjali Sharma" />
+                <input required className="form-input" value={formData.name}
+                  onChange={e => setFormData(p => ({ ...p, name: e.target.value }))} placeholder="e.g. Anjali Sharma" />
               </div>
               <div>
                 <label className="form-label">Grade / Class *</label>
-                <select required className="form-select" value={formData.grade} onChange={e => setFormData(p => ({ ...p, grade: e.target.value }))}>
+                <select required className="form-select" value={formData.grade}
+                  onChange={e => setFormData(p => ({ ...p, grade: e.target.value }))}>
                   {GRADES.map(g => <option key={g} value={g}>{formatGrade(g)}</option>)}
                 </select>
               </div>
               <div>
                 <label className="form-label">Parent / Guardian Name</label>
-                <input className="form-input" value={formData.parentName} onChange={e => setFormData(p => ({ ...p, parentName: e.target.value }))} placeholder="e.g. Ramesh Sharma" />
+                <input className="form-input" value={formData.parentName}
+                  onChange={e => setFormData(p => ({ ...p, parentName: e.target.value }))} placeholder="e.g. Ramesh Sharma" />
               </div>
               <div>
                 <label className="form-label">Phone</label>
-                <input className="form-input" type="tel" value={formData.phone} onChange={e => setFormData(p => ({ ...p, phone: e.target.value }))} placeholder="e.g. 9876543210" />
+                <input className="form-input" type="tel" value={formData.phone}
+                  onChange={e => setFormData(p => ({ ...p, phone: e.target.value }))} placeholder="9876543210" />
               </div>
               <div>
                 <label className="form-label">Date of Birth</label>
-                <input className="form-input" type="date" value={formData.dob} onChange={e => setFormData(p => ({ ...p, dob: e.target.value }))} />
+                <input className="form-input" type="date" value={formData.dob}
+                  onChange={e => setFormData(p => ({ ...p, dob: e.target.value }))} />
               </div>
             </div>
             <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
@@ -263,17 +286,12 @@ function StudentsInner() {
         </div>
       )}
 
-      {/* Global Filters & Search */}
+      {/* Filters */}
       <div className="card" style={{ padding: '14px 16px', display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
         <div style={{ position: 'relative', flex: '1', minWidth: '200px' }}>
           <Search size={16} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }} />
-          <input
-            className="form-input"
-            style={{ paddingLeft: '34px' }}
-            placeholder="Search name or GR number..."
-            value={searchQuery}
-            onChange={e => setSearchQuery(e.target.value)}
-          />
+          <input className="form-input" style={{ paddingLeft: '34px' }} placeholder="Search name or GR number..."
+            value={searchQuery} onChange={e => setSearchQuery(e.target.value)} />
         </div>
         <select className="form-select" style={{ width: 'auto' }} value={filterGrade} onChange={e => setFilterGrade(e.target.value)}>
           <option value="All">All Grades</option>
@@ -289,7 +307,7 @@ function StudentsInner() {
         <span style={{ fontSize: '0.8rem', color: '#94a3b8', fontWeight: 600, whiteSpace: 'nowrap' }}>{filtered.length} records</span>
       </div>
 
-      {/* Main Student Registry Table */}
+      {/* Student Table */}
       <div className="table-container card">
         <table className="data-table">
           <thead>
@@ -305,61 +323,47 @@ function StudentsInner() {
           </thead>
           <tbody>
             {filtered.length === 0 ? (
-              <tr>
-                <td colSpan={7}>
-                  <div className="empty-state">
-                    <Users size={32} className="empty-state-icon" />
-                    <div className="empty-state-title">No students found</div>
-                  </div>
-                </td>
-              </tr>
+              <tr><td colSpan={7}><div className="empty-state"><Users size={32} className="empty-state-icon" /><div className="empty-state-title">No students found</div></div></td></tr>
             ) : filtered.map(student => {
               const balance = getStudentBalance(student);
               return (
                 <React.Fragment key={student.id}>
-                  {/* Standard Row */}
                   <tr style={{ cursor: 'pointer' }} onClick={() => setExpandedId(expandedId === student.id ? null : student.id)}>
                     <td>
-                      {student.admissionStatus === 'Active' && rollMap[student.id]
-                        ? <span style={{ fontWeight: 700, color: '#4f46e5', fontSize: '0.9rem' }}>#{rollMap[student.id]}</span>
-                        : <span style={{ color: '#cbd5e1', fontSize: '0.8rem' }}>—</span>}
+                      {student.admission_status === 'Active' && rollMap[student.id]
+                        ? <span style={{ fontWeight: 700, color: '#4f46e5' }}>#{rollMap[student.id]}</span>
+                        : <span style={{ color: '#cbd5e1' }}>—</span>}
                     </td>
                     <td>
-                      {student.grNo
-                        ? <span className="gr-number">{student.grNo}</span>
+                      {student.gr_no
+                        ? <span className="gr-number">{student.gr_no}</span>
                         : <span className="gr-unassigned">Pending</span>}
                     </td>
                     <td>
-                      <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{student.name}</div>
+                      <div style={{ fontWeight: 600 }}>{student.name}</div>
                       {student.dob && <div style={{ fontSize: '0.72rem', color: '#94a3b8' }}>DOB: {student.dob}</div>}
                     </td>
                     <td><span className="grade-pill">{formatGrade(student.grade)}</span></td>
                     <td>
-                      <span className={`badge ${STATUS_CONFIG[student.admissionStatus]?.cls}`}>
-                        {STATUS_CONFIG[student.admissionStatus]?.label}
+                      <span className={`badge ${STATUS_CONFIG[student.admission_status]?.cls}`}>
+                        {STATUS_CONFIG[student.admission_status]?.label}
                       </span>
                     </td>
-                    <td style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>{student.parentName || '—'}</td>
+                    <td style={{ color: 'var(--text-secondary)', fontSize: '0.875rem' }}>{student.parent_name || '—'}</td>
                     <td>
                       <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }} onClick={e => e.stopPropagation()}>
-                        {/* Option: Activate (only for New Admissions) */}
-                        {canActivate && student.admissionStatus === 'New Admission' && (
-                          <button className="btn btn-success btn-sm" onClick={() => handleActivate(student)} disabled={saving} title="Activate & Assign GR">
+                        {canActivate && student.admission_status === 'New Admission' && (
+                          <button className="btn btn-success btn-sm" onClick={() => handleActivate(student)} disabled={saving}>
                             <CheckCircle size={14} /> Activate
                           </button>
                         )}
-                        {/* Option: Edit Status */}
-                        {canEdit && student.admissionStatus !== 'Left' && (
-                          <button className="btn btn-ghost btn-icon" onClick={() => setEditModal(student)} title="Edit Status">
+                        {canEdit && student.admission_status !== 'Left' && (
+                          <button className="btn btn-ghost btn-icon" onClick={() => setEditModal(student)}>
                             <Edit2 size={14} />
                           </button>
                         )}
-                        {/* Option: Issue LC (TC) */}
-                        {canLC && student.admissionStatus === 'Active' && (
-                          <button
-                            className={`btn btn-warning btn-sm`}
-                            onClick={() => setLcModal({ student })}
-                          >
+                        {canLC && student.admission_status === 'Active' && (
+                          <button className="btn btn-warning btn-sm" onClick={() => setLcModal({ student })}>
                             <FileText size={14} /> LC
                             {balance > 0 && <AlertTriangle size={12} style={{ color: '#fbbf24', marginLeft: '4px' }} />}
                           </button>
@@ -367,16 +371,15 @@ function StudentsInner() {
                       </div>
                     </td>
                   </tr>
-                  {/* Accordion Detail Row */}
                   {expandedId === student.id && (
                     <tr key={`exp-${student.id}`} style={{ background: '#f8fafc' }}>
                       <td colSpan={7} style={{ padding: '12px 20px' }}>
                         <div style={{ display: 'flex', gap: '24px', flexWrap: 'wrap', fontSize: '0.82rem', color: '#475569' }}>
                           <div><span style={{ fontWeight: 700 }}>Phone:</span> {student.phone || 'N/A'}</div>
-                          <div><span style={{ fontWeight: 700 }}>Admitted On:</span> {student.createdAt ? new Date(student.createdAt).toLocaleDateString('en-IN') : 'N/A'}</div>
-                          {student.activatedAt && <div><span style={{ fontWeight: 700 }}>Activated:</span> {new Date(student.activatedAt).toLocaleDateString('en-IN')}</div>}
-                          {student.grNo && <div><span style={{ fontWeight: 700 }}>Fee Balance:</span> <span style={{ color: balance > 0 ? '#dc2626' : '#059669', fontWeight: 700 }}>₹{balance.toLocaleString('en-IN')}</span></div>}
-                          {student.lcDate && <div><span style={{ fontWeight: 700 }}>Left on:</span> {student.lcDate}</div>}
+                          <div><span style={{ fontWeight: 700 }}>Admitted:</span> {student.created_at ? new Date(student.created_at).toLocaleDateString('en-IN') : 'N/A'}</div>
+                          {student.activated_at && <div><span style={{ fontWeight: 700 }}>Activated:</span> {new Date(student.activated_at).toLocaleDateString('en-IN')}</div>}
+                          {student.gr_no && <div><span style={{ fontWeight: 700 }}>Fee Balance:</span> <span style={{ color: balance > 0 ? '#dc2626' : '#059669', fontWeight: 700 }}>₹{balance.toLocaleString('en-IN')}</span></div>}
+                          {student.lc_date && <div><span style={{ fontWeight: 700 }}>Left on:</span> {student.lc_date}</div>}
                         </div>
                       </td>
                     </tr>
@@ -388,7 +391,7 @@ function StudentsInner() {
         </table>
       </div>
 
-      {/* Overlay: Edit Status */}
+      {/* Edit Status Modal */}
       {editModal && (
         <div className="modal-backdrop">
           <div className="modal-box" style={{ maxWidth: '400px' }}>
@@ -398,24 +401,21 @@ function StudentsInner() {
             </div>
             <div className="modal-body">
               <p style={{ marginBottom: '16px', fontSize: '0.875rem', color: '#64748b' }}>
-                GR: <strong>{editModal.grNo || 'Not yet assigned'}</strong> | Grade: <strong>{formatGrade(editModal.grade)}</strong>
+                GR: <strong>{editModal.gr_no || 'Not yet assigned'}</strong> | Grade: <strong>{formatGrade(editModal.grade)}</strong>
               </p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                 {Object.keys(STATUS_CONFIG).map(status => {
-                  if (status === 'Active' && !editModal.grNo) return (
+                  if (status === 'Active' && !editModal.gr_no) return (
                     <button key={status} className="btn btn-success" onClick={() => handleStatusChange(editModal, status)} disabled={saving}>
                       <CheckCircle size={16} /> Activate & Assign GR Number
                     </button>
                   );
-                  if (status === 'New Admission') return null; // Cannot go back to New status
+                  if (status === 'New Admission') return null;
                   return (
-                    <button
-                      key={status}
-                      className={`btn btn-ghost`}
-                      style={{ justifyContent: 'flex-start', border: editModal.admissionStatus === status ? '2px solid #4f46e5' : undefined }}
+                    <button key={status} className="btn btn-ghost"
+                      style={{ justifyContent: 'flex-start', border: editModal.admission_status === status ? '2px solid #4f46e5' : undefined }}
                       onClick={() => handleStatusChange(editModal, status)}
-                      disabled={saving || editModal.admissionStatus === status}
-                    >
+                      disabled={saving || editModal.admission_status === status}>
                       <span className={`badge ${STATUS_CONFIG[status].cls}`}>{status}</span>
                     </button>
                   );
@@ -426,7 +426,7 @@ function StudentsInner() {
         </div>
       )}
 
-      {/* Overlay: Issue LC */}
+      {/* LC Modal */}
       {lcModal && (
         <div className="modal-backdrop">
           <div className="modal-box" style={{ maxWidth: '440px' }}>
@@ -438,16 +438,14 @@ function StudentsInner() {
               <div className="modal-body">
                 <div style={{ background: '#fafafa', borderRadius: '10px', padding: '12px 14px', marginBottom: '16px', fontSize: '0.875rem' }}>
                   <div style={{ fontWeight: 700 }}>{lcModal.student.name}</div>
-                  <div style={{ color: '#64748b' }}>GR: {lcModal.student.grNo} | {formatGrade(lcModal.student.grade)}</div>
+                  <div style={{ color: '#64748b' }}>GR: {lcModal.student.gr_no} | {formatGrade(lcModal.student.grade)}</div>
                 </div>
                 {(() => {
                   const balance = getStudentBalance(lcModal.student);
                   if (balance > 0) return (
                     <div className="alert alert-danger" style={{ marginBottom: '16px' }}>
                       <AlertTriangle size={16} />
-                      <div>
-                        <strong>Block: Unpaid Fees!</strong> Pending balance of ₹{balance.toLocaleString('en-IN')} must be cleared first.
-                      </div>
+                      <div><strong>Block: Unpaid Fees!</strong> ₹{balance.toLocaleString('en-IN')} must be cleared first.</div>
                     </div>
                   );
                   return null;
@@ -474,7 +472,7 @@ function StudentsInner() {
         </div>
       )}
 
-      {/* Overlay: Bulk Promotion */}
+      {/* Promote Modal */}
       {promoteModal && (
         <div className="modal-backdrop">
           <div className="modal-box" style={{ maxWidth: '420px' }}>
@@ -499,21 +497,14 @@ function StudentsInner() {
             <div className="modal-footer">
               <button className="btn btn-ghost" onClick={() => setPromoteModal(false)}>Cancel</button>
               <button className="btn btn-primary" onClick={handlePromote} disabled={saving}>
-                Confirm Global Promotion
+                Confirm Promotion
               </button>
             </div>
           </div>
         </div>
       )}
-    </div>
-  );
-}
 
-// Wrapper with Error Boundary
-export default function Students() {
-  return (
-    <ErrorDumper>
-      <StudentsInner />
-    </ErrorDumper>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
   );
 }

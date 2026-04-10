@@ -1,20 +1,27 @@
 {
-  "name": "backend",
-  "version": "1.0.0",
-  "description": "",
+  "name": "savm-backend",
+  "version": "2.0.0",
+  "description": "SAVM ERP Backend — PostgreSQL API Server",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js",
+    "dev": "node --watch index.js",
+    "setup-db": "node db/schema-run.js",
+    "migrate": "node db/migrate.js",
+    "seed": "node db/seed.js"
   },
   "keywords": [],
-  "author": "",
+  "author": "SAVM ERP",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
+    "bcrypt": "^5.1.1",
     "body-parser": "^2.2.2",
     "cors": "^2.8.6",
-    "csv-parser": "^3.2.0",
     "csv-writer": "^1.6.0",
-    "express": "^5.2.1"
+    "dotenv": "^16.5.0",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.14.1"
   }
 }

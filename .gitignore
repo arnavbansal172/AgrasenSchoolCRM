@@ -10,7 +10,18 @@ lerna-debug.log*
 node_modules
 dist
 dist-ssr
+dev-dist
 *.local
+
+# ── SECRET FILES (Never commit!) ────────────────────────────
+# The .env has database passwords and JWT secrets
+backend/.env
+
+# Database backups
+backups/
+
+# Old JSON data (replaced by PostgreSQL)
+backend/data/master_db.json
 
 # Editor directories and files
 .vscode/*

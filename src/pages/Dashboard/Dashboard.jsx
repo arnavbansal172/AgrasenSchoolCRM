@@ -1,60 +1,68 @@
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../../db/db';
+import { useState, useEffect } from 'react';
+import api from '../../lib/api';
 import { useAuthStore } from '../../store/authStore';
 import { Link } from 'react-router-dom';
 import {
   Users, IndianRupee, ClipboardCheck, GraduationCap,
-  Bell, CalendarDays, TrendingUp, AlertCircle, ChevronRight
+  Bell, CalendarDays, AlertCircle, ChevronRight, Scan
 } from 'lucide-react';
 import { formatGrade } from '../../lib/grEngine';
+
+const gradeOrder = ['KG1','KG2','Balvatica','1','2','3','4','5','6','7','8'];
 
 export default function Dashboard() {
   const { user, getRoleLabel } = useAuthStore();
   const todayStr = new Date().toISOString().split('T')[0];
   const todayFormatted = new Date().toLocaleDateString('en-IN', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
-  // Stats
-  const allStudents = useLiveQuery(() => db.students.toArray()) || [];
-  const activeStudents  = allStudents.filter(s => s.admissionStatus === 'Active');
-  const newAdmissions   = allStudents.filter(s => s.admissionStatus === 'New Admission');
+  const [summary, setSummary] = useState(null);
+  const [students, setStudents] = useState([]);
+  const [notices, setNotices] = useState([]);
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
 
-  const teachers      = useLiveQuery(() => db.teachers.where({ status: 'Active' }).count()) || 0;
-  const feePayments   = useLiveQuery(() => db.feePayments.toArray()) || [];
-  const totalFees     = feePayments.reduce((s, f) => s + (parseInt(f.amount) || 0), 0);
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const [s, n, e, sum] = await Promise.all([
+          api.students.list(),
+          api.notices.list(),
+          api.events.list(),
+          api.reports.summary(),
+        ]);
+        setStudents(s);
+        setNotices(n.slice(0, 3));
+        setEvents(e.filter(ev => ev.date >= todayStr).slice(0, 3));
+        setSummary(sum);
+      } catch (err) {
+        console.error('Dashboard load error:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, []);
 
-  const todayAttendance = useLiveQuery(() => db.attendance.where({ date: todayStr }).toArray()) || [];
-  const presentToday    = todayAttendance.filter(a => a.status === 'Present').length;
-  const attendanceRate  = activeStudents.length > 0 ? Math.round((presentToday / activeStudents.length) * 100) : 0;
-
-  // Events today / upcoming
-  const upcomingEvents = useLiveQuery(() =>
-    db.events.where('date').aboveOrEqual(todayStr).limit(3).toArray()
-  ) || [];
-
-  const todayEvent = upcomingEvents.find(e => e.date === todayStr);
-
-  // Notices (latest 3)
-  const notices = useLiveQuery(() =>
-    db.notices.orderBy('postedAt').reverse().limit(3).toArray()
-  ) || [];
-
+  const activeStudents = students.filter(s => s.admission_status === 'Active');
+  const newAdmissions  = students.filter(s => s.admission_status === 'New Admission');
+  
   // Grade breakdown
-  const gradeBreakdown = useLiveQuery(async () => {
-    const students = await db.students.where({ admissionStatus: 'Active' }).toArray();
-    const counts = {};
-    students.forEach(s => { counts[s.grade] = (counts[s.grade] || 0) + 1; });
-    return counts;
-  }) || {};
-
-  const gradeOrder = ['KG1','KG2','Balvatica','1','2','3','4','5','6','7','8'];
+  const gradeBreakdown = {};
+  activeStudents.forEach(s => { gradeBreakdown[s.grade] = (gradeBreakdown[s.grade] || 0) + 1; });
   const gradesWithStudents = gradeOrder.filter(g => gradeBreakdown[g]);
+
+  const todayEvent = events.find(e => e.date === todayStr);
+
+  if (loading) {
+    return <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60vh', color: '#94a3b8' }}>Loading dashboard...</div>;
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
 
       {/* Today's Event Banner */}
       {todayEvent && (
-        <div style={{ background: 'linear-gradient(135deg, #7c3aed, #4f46e5)', borderRadius: '16px', padding: '20px 24px', color: 'white', display: 'flex', gap: '16px', alignItems: 'center', boxShadow: '0 8px 24px rgba(79,70,229,0.3)', animation: 'slideDown 0.3s ease' }}>
+        <div style={{ background: 'linear-gradient(135deg, #7c3aed, #4f46e5)', borderRadius: '16px', padding: '20px 24px', color: 'white', display: 'flex', gap: '16px', alignItems: 'center', boxShadow: '0 8px 24px rgba(79,70,229,0.3)' }}>
           <div style={{ fontSize: '2.5rem' }}>🎉</div>
           <div>
             <div style={{ fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', opacity: 0.8, marginBottom: '4px' }}>Today's Event</div>
@@ -64,11 +72,9 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Page Header */}
+      {/* Header */}
       <div>
-        <h1 className="page-title">
-          {user?.role === 'teacher' ? `Welcome, ${user?.name}` : 'Dashboard'}
-        </h1>
+        <h1 className="page-title">Dashboard</h1>
         <p className="page-subtitle">{todayFormatted} · {getRoleLabel()}</p>
       </div>
 
@@ -76,9 +82,7 @@ export default function Dashboard() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '16px' }}>
         <Link to="/students" style={{ textDecoration: 'none' }}>
           <div className="stat-card card-hover">
-            <div className="stat-icon" style={{ background: '#eef2ff', color: '#4f46e5' }}>
-              <Users size={24} />
-            </div>
+            <div className="stat-icon" style={{ background: '#eef2ff', color: '#4f46e5' }}><Users size={24} /></div>
             <div>
               <div className="stat-label">Active Students</div>
               <div className="stat-value" style={{ color: '#4f46e5' }}>{activeStudents.length}</div>
@@ -91,41 +95,35 @@ export default function Dashboard() {
           </div>
         </Link>
 
-        <Link to="/attendance" style={{ textDecoration: 'none' }}>
+        <Link to="/face-attendance" style={{ textDecoration: 'none' }}>
           <div className="stat-card card-hover">
-            <div className="stat-icon" style={{ background: '#ecfdf5', color: '#059669' }}>
-              <ClipboardCheck size={24} />
-            </div>
+            <div className="stat-icon" style={{ background: '#ecfdf5', color: '#059669' }}><Scan size={24} /></div>
             <div>
-              <div className="stat-label">Today's Attendance</div>
-              <div className="stat-value" style={{ color: '#059669' }}>{attendanceRate}%</div>
-              <div style={{ fontSize: '0.72rem', color: '#94a3b8', fontWeight: 600, marginTop: '2px' }}>
-                {presentToday} / {activeStudents.length} present
-              </div>
+              <div className="stat-label">Teachers Present Today</div>
+              <div className="stat-value" style={{ color: '#059669' }}>{summary?.teachersPresentToday || 0}</div>
+              <div style={{ fontSize: '0.72rem', color: '#94a3b8', fontWeight: 600, marginTop: '2px' }}>Face-scan attendance</div>
             </div>
           </div>
         </Link>
 
         <Link to="/fees" style={{ textDecoration: 'none' }}>
           <div className="stat-card card-hover">
-            <div className="stat-icon" style={{ background: '#fffbeb', color: '#d97706' }}>
-              <IndianRupee size={24} />
-            </div>
+            <div className="stat-icon" style={{ background: '#fffbeb', color: '#d97706' }}><IndianRupee size={24} /></div>
             <div>
-              <div className="stat-label">Fees Collected</div>
-              <div className="stat-value" style={{ color: '#d97706' }}>₹{totalFees.toLocaleString('en-IN')}</div>
+              <div className="stat-label">Fees This Year</div>
+              <div className="stat-value" style={{ color: '#d97706' }}>₹{(parseInt(summary?.feesThisYear) || 0).toLocaleString('en-IN')}</div>
             </div>
           </div>
         </Link>
 
         <Link to="/teachers" style={{ textDecoration: 'none' }}>
           <div className="stat-card card-hover">
-            <div className="stat-icon" style={{ background: '#f5f3ff', color: '#7c3aed' }}>
-              <GraduationCap size={24} />
-            </div>
+            <div className="stat-icon" style={{ background: '#f5f3ff', color: '#7c3aed' }}><GraduationCap size={24} /></div>
             <div>
               <div className="stat-label">Active Teachers</div>
-              <div className="stat-value" style={{ color: '#7c3aed' }}>{teachers}</div>
+              <div className="stat-value" style={{ color: '#7c3aed' }}>
+                {summary?.teachers?.find(t => t.status === 'Active')?.count || 0}
+              </div>
             </div>
           </div>
         </Link>
@@ -134,10 +132,10 @@ export default function Dashboard() {
       {/* Bottom Grid */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: '20px', alignItems: 'start' }}>
 
-        {/* Class Overview */}
+        {/* Class Strength */}
         <div className="card" style={{ padding: '20px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-primary)' }}>Class Strength</h3>
+            <h3 style={{ fontSize: '0.95rem', fontWeight: 700 }}>Class Strength</h3>
             <Link to="/students" style={{ fontSize: '0.78rem', color: '#4f46e5', fontWeight: 600, textDecoration: 'none' }}>View all →</Link>
           </div>
           {gradesWithStudents.length === 0 ? (
@@ -146,8 +144,7 @@ export default function Dashboard() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
               {gradesWithStudents.map(grade => {
                 const count = gradeBreakdown[grade];
-                const maxStudents = 40;
-                const pct = Math.min((count / maxStudents) * 100, 100);
+                const pct = Math.min((count / 40) * 100, 100);
                 return (
                   <div key={grade}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '4px' }}>
@@ -167,17 +164,17 @@ export default function Dashboard() {
         {/* Upcoming Events */}
         <div className="card" style={{ padding: '20px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+            <h3 style={{ fontSize: '0.95rem', fontWeight: 700 }}>
               <CalendarDays size={16} style={{ display: 'inline', marginRight: '6px', verticalAlign: 'middle', color: '#4f46e5' }} />
               Upcoming Events
             </h3>
             <Link to="/events" style={{ fontSize: '0.78rem', color: '#4f46e5', fontWeight: 600, textDecoration: 'none' }}>See all →</Link>
           </div>
-          {upcomingEvents.length === 0 ? (
+          {events.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '24px', color: '#94a3b8', fontSize: '0.85rem' }}>No upcoming events</div>
           ) : (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
-              {upcomingEvents.map(event => (
+              {events.map(event => (
                 <div key={event.id} style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
                   <div style={{ background: event.date === todayStr ? '#eef2ff' : '#f8fafc', border: `1px solid ${event.date === todayStr ? '#c7d2fe' : '#e2e8f0'}`, borderRadius: '10px', padding: '6px 10px', textAlign: 'center', minWidth: '44px', flexShrink: 0 }}>
                     <div style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase' }}>
@@ -188,8 +185,8 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <div>
-                    <div style={{ fontSize: '0.875rem', fontWeight: 700, color: 'var(--text-primary)' }}>{event.title}</div>
-                    {event.description && <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginTop: '2px' }}>{event.description.slice(0, 50)}{event.description.length > 50 ? '...' : ''}</div>}
+                    <div style={{ fontSize: '0.875rem', fontWeight: 700 }}>{event.title}</div>
+                    {event.description && <div style={{ fontSize: '0.78rem', color: '#94a3b8', marginTop: '2px' }}>{event.description.slice(0, 60)}{event.description.length > 60 ? '...' : ''}</div>}
                   </div>
                 </div>
               ))}
@@ -197,10 +194,10 @@ export default function Dashboard() {
           )}
         </div>
 
-        {/* Latest Notices */}
+        {/* Notices */}
         <div className="card" style={{ padding: '20px' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
-            <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: 'var(--text-primary)' }}>
+            <h3 style={{ fontSize: '0.95rem', fontWeight: 700 }}>
               <Bell size={16} style={{ display: 'inline', marginRight: '6px', verticalAlign: 'middle', color: '#f59e0b' }} />
               Notice Board
             </h3>
@@ -212,9 +209,9 @@ export default function Dashboard() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
               {notices.map(notice => (
                 <div key={notice.id} style={{ padding: '12px 14px', background: '#fafafa', border: '1px solid #f1f5f9', borderRadius: '10px', borderLeft: notice.pinned ? '3px solid #f59e0b' : '3px solid transparent' }}>
-                  <div style={{ fontWeight: 700, fontSize: '0.85rem', color: 'var(--text-primary)', marginBottom: '2px' }}>{notice.title}</div>
+                  <div style={{ fontWeight: 700, fontSize: '0.85rem', marginBottom: '2px' }}>{notice.title}</div>
                   <div style={{ fontSize: '0.78rem', color: '#94a3b8' }}>
-                    {notice.postedBy} · {new Date(notice.postedAt).toLocaleDateString('en-IN')}
+                    {notice.posted_by} · {new Date(notice.posted_at).toLocaleDateString('en-IN')}
                   </div>
                 </div>
               ))}

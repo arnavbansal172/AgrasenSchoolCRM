@@ -1,6 +1,5 @@
 import { useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
-import { syncDownstream, initSyncHooks } from './lib/syncEngine';
 import { useAuthStore } from './store/authStore';
 
 // Layout & Pages
@@ -19,59 +18,97 @@ import Notices from './pages/Notices/Notices';
 import Reports from './pages/Reports/Reports';
 import Procurement from './pages/Procurement/Procurement';
 import Staff from './pages/Staff/Staff';
+import UserManagement from './pages/Admin/UserManagement';
+import TeacherFaceAttendance from './pages/Attendance/TeacherFaceAttendance';
 
-/* 
-  AUTHENTICATION GUARD
-  This higher-order component protects secure routes.
-  If the user is not authenticated, it redirects them to the login page.
+/*
+  AUTH GUARD
+  Wraps protected routes. Redirects to /login if not authenticated.
+  The hydrate() call in App ensures the session is restored from
+  sessionStorage before this check runs.
 */
 function AuthGuard({ children }) {
   const isAuthenticated = useAuthStore(s => s.isAuthenticated);
-  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (!isAuthenticated) {
+    return <Navigate to="/login" replace />;
+  }
   return children;
 }
 
-/* 
-  ROOT APPLICATION COMPONENT
-  This file handles:
-  1. Bootstrapping the session (Hydrate).
-  2. Initializing the Database Synchronization Engine.
-  3. Global Routing table (React Router).
+/*
+  PERMISSION GUARD
+  Wraps pages that require specific permissions.
+  Shows a "403 No Access" message if the user lacks permission.
 */
+function PermGuard({ perm, children }) {
+  const can = useAuthStore(s => s.can);
+  if (!can(perm)) {
+    return (
+      <div style={{
+        display: 'flex', flexDirection: 'column', alignItems: 'center',
+        justifyContent: 'center', height: '50vh', gap: '12px',
+        color: '#94a3b8', textAlign: 'center'
+      }}>
+        <div style={{ fontSize: '3rem' }}>🔒</div>
+        <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#1e293b' }}>Access Denied</div>
+        <div style={{ fontSize: '0.875rem' }}>
+          You don't have permission to view this page.
+          <br />Contact the Super Admin to request access.
+        </div>
+      </div>
+    );
+  }
+  return children;
+}
+
 export default function App() {
   const hydrate = useAuthStore(s => s.hydrate);
 
-  // ON MOUNT: Run system initialization
-  useEffect(() => { 
-    hydrate();        // 1. Check if user was already logged in (sessionStorage)
-    initSyncHooks();  // 2. Attach data listeners to the Local Database
-    syncDownstream(); // 3. Pull latest school data from the host PC
+  // ON MOUNT: Restore session from sessionStorage
+  useEffect(() => {
+    hydrate();
   }, []);
 
   return (
     <BrowserRouter>
       <Routes>
-        {/* Public Routes */}
+        {/* Public Route */}
         <Route path="/login" element={<Login />} />
 
-        {/* Protected Routes (Wrapped in AuthGuard & Layout) */}
+        {/* All Protected Routes inside the Layout shell */}
         <Route path="/" element={<AuthGuard><Layout /></AuthGuard>}>
-          <Route index element={<Dashboard />} />
-          <Route path="students" element={<Students />} />
-          <Route path="attendance" element={<Attendance />} />
-          <Route path="fees" element={<Fees />} />
-          <Route path="teachers" element={<Teachers />} />
-          <Route path="salaries" element={<Salaries />} />
-          <Route path="results" element={<Results />} />
-          <Route path="timetable" element={<Timetable />} />
-          <Route path="events" element={<Events />} />
-          <Route path="notices" element={<Notices />} />
-          <Route path="procurement" element={<Procurement />} />
-          <Route path="reports" element={<Reports />} />
-          <Route path="staff" element={<Staff />} />
+          <Route index element={<PermGuard perm="dashboard.view"><Dashboard /></PermGuard>} />
+          
+          {/* Face Scan Attendance */}
+          <Route path="face-attendance" element={<PermGuard perm="face_attendance.use"><TeacherFaceAttendance /></PermGuard>} />
+          
+          {/* Core */}
+          <Route path="students"    element={<PermGuard perm="students.view"><Students /></PermGuard>} />
+          <Route path="attendance"  element={<PermGuard perm="attendance.view"><Attendance /></PermGuard>} />
+          <Route path="results"     element={<PermGuard perm="results.view"><Results /></PermGuard>} />
+          
+          {/* Finance */}
+          <Route path="fees"        element={<PermGuard perm="fees.view"><Fees /></PermGuard>} />
+          <Route path="salaries"    element={<PermGuard perm="salaries.view"><Salaries /></PermGuard>} />
+          <Route path="procurement" element={<PermGuard perm="procurement.view"><Procurement /></PermGuard>} />
+          
+          {/* People */}
+          <Route path="teachers"    element={<PermGuard perm="teachers.view"><Teachers /></PermGuard>} />
+          <Route path="staff"       element={<PermGuard perm="staff.view"><Staff /></PermGuard>} />
+          
+          {/* Admin: User Management (super_admin only) */}
+          <Route path="admin/users" element={<PermGuard perm="staff.view"><UserManagement /></PermGuard>} />
+          
+          {/* Academic */}
+          <Route path="timetable"   element={<PermGuard perm="timetable.view"><Timetable /></PermGuard>} />
+          <Route path="events"      element={<PermGuard perm="events.view"><Events /></PermGuard>} />
+          <Route path="notices"     element={<PermGuard perm="notices.view"><Notices /></PermGuard>} />
+          
+          {/* System */}
+          <Route path="reports"     element={<PermGuard perm="reports.view"><Reports /></PermGuard>} />
         </Route>
 
-        {/* Catch-all: Redirect to dashboard */}
+        {/* Catch-all redirect */}
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>

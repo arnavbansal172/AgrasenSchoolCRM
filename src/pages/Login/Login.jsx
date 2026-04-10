@@ -1,151 +1,203 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { GraduationCap, LogIn, AlertCircle } from 'lucide-react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../../db/db';
+import { GraduationCap, LogIn, AlertCircle, Eye, EyeOff, Shield } from 'lucide-react';
 import { useAuthStore } from '../../store/authStore';
 
-/* 
-  LOGIN PAGE
-  This component serves as the entry point for all staff members.
+/*
+  LOGIN PAGE — v2.0 (Real Authentication)
   
-  Authentication Flow:
-  1. User enters Login ID and Password.
-  2. frontend checks the local 'staffUsers' table in IndexedDB.
-  3. If match is found, session is persisted in authStore (sessionStorage).
-  4. System redirects to the Dashboard.
+  Connects to the actual PostgreSQL backend via the authStore.
+  JWT token is stored in sessionStorage on success.
 */
 
 export default function Login() {
-  // ── UI STATE ─────────────────────────────────────────────────────────────
-  const [error, setError] = useState('');                   // Auth error feedback
-  const [loading, setLoading] = useState(false);             // Authenticating spinner state
-  const [credentials, setCredentials] = useState({           // Input buffer
-    loginId: '', 
-    password: '' 
-  });
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [credentials, setCredentials] = useState({ loginId: '', password: '' });
 
-  // ── ACTIONS & ROUTING ────────────────────────────────────────────────────
-  const login = useAuthStore(s => s.login);                  // Centralized auth function
-  const navigate = useNavigate();                            // Dynamic router redirection
+  const login = useAuthStore(s => s.login);
+  const navigate = useNavigate();
 
-  // ── LIVE QUERY: DB WARMUP ────────────────────────────────────────────────
-  // We trigger a live query here to ensure Dexie is awake and the 'on ready' 
-  // seeding logic (admin account creation) has space to execute.
-  useLiveQuery(() => db.staffUsers.toArray());
-
-  // ── AUTHENTICATION HANDLER ───────────────────────────────────────────────
   const handleSubmit = async (e) => {
     e.preventDefault();
     setLoading(true);
     setError('');
 
     try {
-      // 1. Sanitize inputs
-      const loginId = credentials.loginId.trim().toLowerCase();
-      const password = credentials.password;
-
-      // 2. Perform the secure login via the centralized authStore
-      // This function handles the logic of checking the local IndexedDB.
-      const success = await login(loginId, password);
-
-      if (success) {
-        // 3. If valid, redirect to the secure home page
-        navigate('/', { replace: true });
-      } else {
-        // 4. Show "Invalid" feedback if the combination doesn't exist locally
-        setError('Invalid Login ID or Password');
-      }
+      await login(credentials.loginId.trim().toLowerCase(), credentials.password);
+      navigate('/', { replace: true });
     } catch (err) {
-      console.error('Login Technical Error:', err);
-      setError('Login failed due to a system error. Please try again.');
+      setError(err.message || 'Invalid Login ID or Password.');
     } finally {
       setLoading(false);
     }
   };
 
-  // ── RENDER ───────────────────────────────────────────────────────────────
   return (
-    <div style={{ minHeight: '100vh', background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 50%, #4338ca 100%)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '16px' }}>
-      
-      {/* Visual background decoration (Blurs) */}
+    <div style={{
+      minHeight: '100vh',
+      background: 'linear-gradient(135deg, #0f172a 0%, #1e1b4b 40%, #312e81 100%)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: '16px',
+      position: 'relative',
+      overflow: 'hidden',
+    }}>
+
+      {/* Decorative background blobs */}
       <div style={{ position: 'fixed', inset: 0, overflow: 'hidden', pointerEvents: 'none' }}>
-        <div style={{ position: 'absolute', top: '-10%', right: '-5%', width: '400px', height: '400px', borderRadius: '50%', background: 'rgba(129,140,248,0.1)', filter: 'blur(60px)' }} />
-        <div style={{ position: 'absolute', bottom: '-10%', left: '-5%', width: '300px', height: '300px', borderRadius: '50%', background: 'rgba(167,139,250,0.1)', filter: 'blur(60px)' }} />
+        <div style={{ position: 'absolute', top: '-15%', right: '-10%', width: '500px', height: '500px', borderRadius: '50%', background: 'rgba(99,102,241,0.12)', filter: 'blur(80px)' }} />
+        <div style={{ position: 'absolute', bottom: '-15%', left: '-10%', width: '400px', height: '400px', borderRadius: '50%', background: 'rgba(139,92,246,0.1)', filter: 'blur(60px)' }} />
+        <div style={{ position: 'absolute', top: '40%', left: '40%', width: '300px', height: '300px', borderRadius: '50%', background: 'rgba(67,56,202,0.08)', filter: 'blur(50px)' }} />
       </div>
 
-      <div style={{ width: '100%', maxWidth: '380px', position: 'relative', zIndex: 1 }}>
+      <div style={{ width: '100%', maxWidth: '400px', position: 'relative', zIndex: 1 }}>
 
-        {/* Portal Branding Section */}
+        {/* Branding */}
         <div style={{ textAlign: 'center', marginBottom: '32px' }}>
-          <div style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: '72px', height: '72px', background: 'rgba(255,255,255,0.12)', borderRadius: '20px', marginBottom: '16px', border: '1px solid rgba(255,255,255,0.2)', backdropFilter: 'blur(10px)' }}>
-            <GraduationCap size={36} color="white" />
+          <div style={{
+            display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+            width: '80px', height: '80px',
+            background: 'rgba(255,255,255,0.08)',
+            borderRadius: '24px',
+            marginBottom: '20px',
+            border: '1px solid rgba(255,255,255,0.15)',
+            backdropFilter: 'blur(10px)',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.3)'
+          }}>
+            <GraduationCap size={40} color="white" />
           </div>
-          <h1 style={{ color: 'white', fontSize: '1.75rem', fontWeight: 800, marginBottom: '4px' }}>SAVM Portal</h1>
-          <p style={{ color: 'rgba(199,210,254,0.8)', fontSize: '0.9rem' }}>Shri Agrasen Vidya Mandir ERP</p>
+          <h1 style={{ color: 'white', fontSize: '2rem', fontWeight: 800, marginBottom: '6px', fontFamily: 'Lexend, sans-serif' }}>
+            SAVM Portal
+          </h1>
+          <p style={{ color: 'rgba(199,210,254,0.7)', fontSize: '0.9rem', fontWeight: 500 }}>
+            Shri Agrasen Vidya Mandir — Staff Portal
+          </p>
         </div>
 
-        {/* Auth Card (Floating Glass-like container) */}
-        <div style={{ background: 'rgba(255,255,255,0.97)', borderRadius: '24px', boxShadow: '0 25px 50px rgba(0,0,0,0.35)', overflow: 'hidden', padding: '32px' }}>
-          
-          <div style={{ textAlign: 'center', marginBottom: '24px' }}>
-            <h2 style={{ fontSize: '1.2rem', fontWeight: 700, color: '#1e1b4b' }}>Staff Login</h2>
-            <p style={{ fontSize: '0.85rem', color: '#64748b', marginTop: '4px' }}>Enter your credentials to continue.</p>
+        {/* Login Card */}
+        <div style={{
+          background: 'rgba(255,255,255,0.97)',
+          borderRadius: '28px',
+          boxShadow: '0 32px 64px rgba(0,0,0,0.4), 0 0 0 1px rgba(255,255,255,0.1)',
+          overflow: 'hidden',
+          padding: '36px',
+        }}>
+
+          <div style={{ textAlign: 'center', marginBottom: '28px' }}>
+            <h2 style={{ fontSize: '1.3rem', fontWeight: 800, color: '#1e1b4b', marginBottom: '4px' }}>
+              Staff Login
+            </h2>
+            <p style={{ fontSize: '0.85rem', color: '#64748b' }}>
+              Enter your credentials to access the ERP
+            </p>
           </div>
 
-          {/* Error Message Display */}
+          {/* Error Display */}
           {error && (
-            <div style={{ background: '#fef2f2', color: '#dc2626', border: '1px solid #fecaca', borderRadius: '10px', padding: '12px 14px', fontSize: '0.82rem', textAlign: 'center', marginBottom: '20px', fontWeight: 600, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
-              <AlertCircle size={20} />
+            <div style={{
+              background: '#fef2f2', color: '#dc2626',
+              border: '1px solid #fecaca', borderRadius: '12px',
+              padding: '12px 16px', marginBottom: '20px',
+              display: 'flex', alignItems: 'center', gap: '10px',
+              fontSize: '0.85rem', fontWeight: 600,
+            }}>
+              <AlertCircle size={18} style={{ flexShrink: 0 }} />
               {error}
             </div>
           )}
 
-          {/* Login Form */}
-          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '18px' }}>
             <div>
               <label className="form-label">Login ID</label>
               <input
+                id="loginId"
                 type="text"
                 required
+                autoComplete="username"
                 className="form-input"
-                placeholder="e.g. admin"
+                placeholder="e.g. admin or superadmin"
                 value={credentials.loginId}
                 onChange={e => setCredentials(p => ({ ...p, loginId: e.target.value }))}
-              />
-            </div>
-            <div>
-              <label className="form-label">Password</label>
-              <input
-                type="password"
-                required
-                className="form-input"
-                placeholder="••••••••"
-                value={credentials.password}
-                onChange={e => setCredentials(p => ({ ...p, password: e.target.value }))}
+                style={{ fontSize: '1rem' }}
               />
             </div>
 
+            <div>
+              <label className="form-label">Password</label>
+              <div style={{ position: 'relative' }}>
+                <input
+                  id="password"
+                  type={showPassword ? 'text' : 'password'}
+                  required
+                  autoComplete="current-password"
+                  className="form-input"
+                  placeholder="••••••••"
+                  value={credentials.password}
+                  onChange={e => setCredentials(p => ({ ...p, password: e.target.value }))}
+                  style={{ paddingRight: '44px', fontSize: '1rem' }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(s => !s)}
+                  style={{
+                    position: 'absolute', right: '12px', top: '50%', transform: 'translateY(-50%)',
+                    background: 'none', border: 'none', cursor: 'pointer', color: '#94a3b8', lineHeight: 0,
+                  }}
+                >
+                  {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+                </button>
+              </div>
+            </div>
+
             <button
+              id="login-submit"
               type="submit"
               className="btn btn-primary"
-              style={{ width: '100%', marginTop: '8px', padding: '12px', fontSize: '1rem', display: 'flex', justifyContent: 'center' }}
+              style={{ width: '100%', padding: '14px', fontSize: '1rem', fontWeight: 700, marginTop: '4px' }}
               disabled={loading}
             >
               {loading ? (
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                  <div className="spinner-small" /> Authenticating...
-                </div>
+                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                  <span className="spinner-small" /> Verifying...
+                </span>
               ) : (
-                <>
-                  <LogIn size={18} style={{ marginRight: '8px' }} /> Sign In
-                </>
+                <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                  <LogIn size={18} /> Sign In
+                </span>
               )}
             </button>
           </form>
 
+          {/* Security note */}
+          <div style={{
+            marginTop: '24px', display: 'flex', alignItems: 'center', gap: '8px',
+            justifyContent: 'center', color: '#94a3b8', fontSize: '0.75rem'
+          }}>
+            <Shield size={13} />
+            <span>Secured · Local Network Only · PostgreSQL</span>
+          </div>
+        </div>
+
+        {/* Version badge */}
+        <div style={{ textAlign: 'center', marginTop: '16px', color: 'rgba(199,210,254,0.4)', fontSize: '0.72rem' }}>
+          SAVM ERP v2.0 · 4-Role Access Control
         </div>
       </div>
+
+      <style>{`
+        .spinner-small {
+          width: 16px; height: 16px;
+          border: 2px solid rgba(255,255,255,0.3);
+          border-top-color: white;
+          border-radius: 50%;
+          animation: spin 0.8s linear infinite;
+          display: inline-block;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+      `}</style>
     </div>
   );
 }
