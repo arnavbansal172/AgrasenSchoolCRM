@@ -16,16 +16,23 @@ const STATUS_COLORS = {
 };
 
 // ── FACE ENROLLMENT MODAL ────────────────────────────────────────────────────
+// Supports two methods:
+//   1. Photo Upload  — take a selfie with phone camera (works on HTTP, no HTTPS needed)
+//   2. Live Webcam   — classic webcam capture (requires HTTPS on non-localhost)
 function FaceEnrollModal({ teacher, onClose, onSuccess }) {
+  const [mode, setMode] = useState('photo'); // 'photo' | 'webcam'
   const [modelsLoaded, setModelsLoaded] = useState(false);
   const [loadingModels, setLoadingModels] = useState(true);
   const [stream, setStream] = useState(null);
   const [capturing, setCapturing] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
+  const [previewSrc, setPreviewSrc] = useState(null); // for photo upload preview
   const videoRef = useRef(null);
+  const imgRef   = useRef(null);
+  const fileRef  = useRef(null);
 
-  // Load models
+  // Load face-api models on mount
   useEffect(() => {
     const load = async () => {
       try {
@@ -36,7 +43,7 @@ function FaceEnrollModal({ teacher, onClose, onSuccess }) {
         ]);
         setModelsLoaded(true);
       } catch {
-        setError('Failed to load face models.');
+        setError('Failed to load face models. Ensure /public/models/ files are present.');
       } finally {
         setLoadingModels(false);
       }
@@ -44,28 +51,69 @@ function FaceEnrollModal({ teacher, onClose, onSuccess }) {
     load();
   }, []);
 
-  // Start camera
+  // Start webcam (only when switching to webcam mode)
   const startCamera = useCallback(async () => {
     try {
       const s = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user', width: { ideal: 640 } } });
       setStream(s);
       if (videoRef.current) videoRef.current.srcObject = s;
     } catch {
-      setError('Camera access denied. Please allow camera permissions.');
+      setError('Camera access denied. Use "Photo Upload" mode instead, or allow camera permissions.');
     }
   }, []);
 
   useEffect(() => {
-    startCamera();
+    if (mode === 'webcam') startCamera();
     return () => { if (stream) stream.getTracks().forEach(t => t.stop()); };
-  }, []);
+  }, [mode]);
 
-  // Capture face descriptor
+  // ── METHOD 1: Photo Upload ─────────────────────────────────────────────────
+  const handlePhotoSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(null);
+    const url = URL.createObjectURL(file);
+    setPreviewSrc(url);
+  };
+
+  const enrollFromPhoto = async () => {
+    if (!previewSrc || !modelsLoaded) return;
+    setCapturing(true);
+    setError(null);
+    try {
+      const img = imgRef.current;
+      // Wait for image to be loaded in DOM
+      await new Promise((res, rej) => {
+        if (img.complete) return res();
+        img.onload = res;
+        img.onerror = rej;
+      });
+
+      const detection = await faceapi
+        .detectSingleFace(img, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5 }))
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+
+      if (!detection) {
+        setError('No face detected in this photo. Try a clearer, well-lit selfie looking straight at the camera.');
+        return;
+      }
+
+      await api.teachers.enrollFace(teacher.id, Array.from(detection.descriptor));
+      setResult({ success: true });
+      onSuccess();
+    } catch (err) {
+      setError('Enrollment failed: ' + err.message);
+    } finally {
+      setCapturing(false);
+    }
+  };
+
+  // ── METHOD 2: Live Webcam ──────────────────────────────────────────────────
   const captureAndEnroll = async () => {
     if (!modelsLoaded || !videoRef.current || !stream) return;
     setCapturing(true);
     setError(null);
-
     try {
       // Take 5 samples and average them for better accuracy
       const samples = [];
@@ -74,24 +122,18 @@ function FaceEnrollModal({ teacher, onClose, onSuccess }) {
           .detectSingleFace(videoRef.current, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.6 }))
           .withFaceLandmarks()
           .withFaceDescriptor();
-
         if (!detection) {
-          setError('No face detected. Look directly at the camera, ensure good lighting.');
+          setError('No face detected. Look directly at the camera in good lighting.');
           setCapturing(false);
           return;
         }
         samples.push(detection.descriptor);
-        await new Promise(r => setTimeout(r, 200)); // Small delay between samples
+        await new Promise(r => setTimeout(r, 200));
       }
-
-      // Average all 5 samples for a more stable descriptor
       const avgDescriptor = samples[0].map((_, i) =>
         samples.reduce((sum, s) => sum + s[i], 0) / samples.length
       );
-
-      // Save to PostgreSQL via API
       await api.teachers.enrollFace(teacher.id, Array.from(avgDescriptor));
-
       setResult({ success: true });
       if (stream) stream.getTracks().forEach(t => t.stop());
       onSuccess();
@@ -112,14 +154,9 @@ function FaceEnrollModal({ teacher, onClose, onSuccess }) {
           </h3>
           <button className="btn btn-ghost btn-icon" onClick={onClose}><X size={18} /></button>
         </div>
-        <div className="modal-body">
-          {loadingModels && (
-            <div style={{ textAlign: 'center', padding: '32px' }}>
-              <RefreshCw size={28} style={{ animation: 'spin 1s linear infinite', color: '#6366f1', marginBottom: '12px' }} />
-              <div style={{ fontWeight: 600, color: '#1e293b' }}>Loading Face Recognition...</div>
-            </div>
-          )}
 
+        <div className="modal-body">
+          {/* Success state */}
           {result?.success && (
             <div style={{ textAlign: 'center', padding: '32px' }}>
               <CheckCircle2 size={48} color="#10b981" style={{ marginBottom: '12px' }} />
@@ -131,58 +168,137 @@ function FaceEnrollModal({ teacher, onClose, onSuccess }) {
             </div>
           )}
 
+          {/* Loading models */}
+          {loadingModels && !result && (
+            <div style={{ textAlign: 'center', padding: '32px' }}>
+              <RefreshCw size={28} style={{ animation: 'spin 1s linear infinite', color: '#6366f1', marginBottom: '12px' }} />
+              <div style={{ fontWeight: 600, color: '#1e293b' }}>Loading Face Recognition...</div>
+            </div>
+          )}
+
           {!loadingModels && !result && (
             <>
-              <div style={{
-                position: 'relative', background: '#000', borderRadius: '16px',
-                overflow: 'hidden', aspectRatio: '4/3',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                marginBottom: '16px'
-              }}>
-                <video ref={videoRef} autoPlay playsInline muted
-                  style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: capturing ? 0.5 : 1 }}
-                />
-                {/* Face guide overlay */}
-                <div style={{
-                  position: 'absolute', top: '15%', left: '25%', right: '25%', bottom: '10%',
-                  border: '2px solid rgba(16,185,129,0.6)',
-                  borderRadius: '50% 50% 45% 45% / 50% 50% 50% 50%',
-                  pointerEvents: 'none'
-                }} />
-                {capturing && (
-                  <div style={{
-                    position: 'absolute', color: '#10b981', fontWeight: 800,
-                    fontSize: '0.9rem', background: 'rgba(0,0,0,0.7)',
-                    padding: '8px 16px', borderRadius: '999px',
-                    display: 'flex', alignItems: 'center', gap: '8px'
-                  }}>
-                    <RefreshCw size={16} style={{ animation: 'spin 0.8s linear infinite' }} />
-                    Scanning (5 samples)...
-                  </div>
-                )}
+              {/* Mode switcher */}
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', background: '#f1f5f9', borderRadius: '10px', padding: '4px' }}>
+                {[
+                  { id: 'photo', label: '📷 Take/Upload Photo', desc: 'Works on any phone (recommended)' },
+                  { id: 'webcam', label: '🎥 Live Webcam', desc: 'Needs HTTPS on phone' },
+                ].map(m => (
+                  <button key={m.id} onClick={() => { setMode(m.id); setError(null); }}
+                    style={{
+                      flex: 1, padding: '10px 8px', borderRadius: '8px', border: 'none', cursor: 'pointer',
+                      fontWeight: 700, fontSize: '0.82rem', transition: 'all 0.15s',
+                      background: mode === m.id ? 'white' : 'transparent',
+                      color: mode === m.id ? '#1e293b' : '#94a3b8',
+                      boxShadow: mode === m.id ? '0 1px 4px rgba(0,0,0,0.1)' : 'none',
+                    }}>
+                    {m.label}
+                  </button>
+                ))}
               </div>
 
-              {error && (
-                <div style={{ color: '#dc2626', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '10px', padding: '10px 14px', fontSize: '0.85rem', marginBottom: '14px', display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <AlertCircle size={16} style={{ flexShrink: 0 }} /> {error}
+              {/* ── PHOTO UPLOAD MODE ── */}
+              {mode === 'photo' && (
+                <div>
+                  <div style={{ background: '#f0fdf4', borderRadius: '10px', padding: '12px 14px', fontSize: '0.82rem', color: '#166534', marginBottom: '16px' }}>
+                    <strong>How to enroll from phone:</strong> Tap "Take Selfie / Choose Photo" → phone front camera opens → take a clear photo looking straight ahead
+                  </div>
+
+                  {/* Hidden file input — capture="user" opens selfie camera on phones */}
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept="image/*"
+                    capture="user"
+                    style={{ display: 'none' }}
+                    onChange={handlePhotoSelect}
+                  />
+
+                  {/* Preview area or upload button */}
+                  {previewSrc ? (
+                    <div style={{ position: 'relative', textAlign: 'center', marginBottom: '14px' }}>
+                      <img
+                        ref={imgRef}
+                        src={previewSrc}
+                        alt="Face preview"
+                        crossOrigin="anonymous"
+                        style={{ maxWidth: '100%', maxHeight: '260px', borderRadius: '12px', border: '2px solid #d1fae5' }}
+                      />
+                      <button
+                        onClick={() => { setPreviewSrc(null); setError(null); fileRef.current.value = ''; }}
+                        style={{ position: 'absolute', top: '8px', right: '8px', background: 'rgba(0,0,0,0.5)', border: 'none', color: 'white', borderRadius: '50%', width: '28px', height: '28px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                        <X size={14} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div
+                      onClick={() => fileRef.current?.click()}
+                      style={{
+                        border: '2px dashed #a7f3d0', borderRadius: '14px', padding: '40px 20px',
+                        textAlign: 'center', cursor: 'pointer', marginBottom: '14px',
+                        background: '#f0fdf4', transition: 'all 0.15s',
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.background = '#dcfce7'}
+                      onMouseLeave={e => e.currentTarget.style.background = '#f0fdf4'}
+                    >
+                      <Camera size={32} color="#10b981" style={{ marginBottom: '10px' }} />
+                      <div style={{ fontWeight: 700, color: '#1e293b', fontSize: '0.95rem' }}>Take Selfie / Choose Photo</div>
+                      <div style={{ color: '#64748b', fontSize: '0.78rem', marginTop: '4px' }}>Tap here → phone camera opens automatically</div>
+                    </div>
+                  )}
+
+                  {error && (
+                    <div style={{ color: '#dc2626', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '10px', padding: '10px 14px', fontSize: '0.85rem', marginBottom: '14px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <AlertCircle size={16} style={{ flexShrink: 0 }} /> {error}
+                    </div>
+                  )}
+
+                  <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                    <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+                    {previewSrc && (
+                      <button className="btn btn-primary" onClick={enrollFromPhoto}
+                        disabled={capturing || !modelsLoaded}
+                        style={{ background: 'linear-gradient(135deg, #10b981, #059669)' }}>
+                        {capturing ? <><RefreshCw size={15} /> Analyzing...</> : <><CheckCircle2 size={15} /> Enroll This Photo</>}
+                      </button>
+                    )}
+                  </div>
                 </div>
               )}
 
-              <div style={{ background: '#f0fdf4', borderRadius: '10px', padding: '12px 14px', fontSize: '0.82rem', color: '#166534', marginBottom: '16px' }}>
-                <strong>Instructions:</strong> Position {teacher.name}'s face in the oval outline. Ensure good lighting. Click "Capture Face" when ready.
-              </div>
+              {/* ── WEBCAM MODE ── */}
+              {mode === 'webcam' && (
+                <div>
+                  <div style={{ position: 'relative', background: '#000', borderRadius: '16px', overflow: 'hidden', aspectRatio: '4/3', display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: '16px' }}>
+                    <video ref={videoRef} autoPlay playsInline muted style={{ width: '100%', height: '100%', objectFit: 'cover', opacity: capturing ? 0.5 : 1 }} />
+                    <div style={{ position: 'absolute', top: '15%', left: '25%', right: '25%', bottom: '10%', border: '2px solid rgba(16,185,129,0.6)', borderRadius: '50% 50% 45% 45% / 50% 50% 50% 50%', pointerEvents: 'none' }} />
+                    {capturing && (
+                      <div style={{ position: 'absolute', color: '#10b981', fontWeight: 800, fontSize: '0.9rem', background: 'rgba(0,0,0,0.7)', padding: '8px 16px', borderRadius: '999px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <RefreshCw size={16} style={{ animation: 'spin 0.8s linear infinite' }} /> Scanning (5 samples)...
+                      </div>
+                    )}
+                  </div>
 
-              <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
-                <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
-                <button
-                  className="btn btn-primary"
-                  onClick={captureAndEnroll}
-                  disabled={capturing || !modelsLoaded || !stream}
-                  style={{ background: 'linear-gradient(135deg, #10b981, #059669)' }}
-                >
-                  {capturing ? <><RefreshCw size={15} /> Scanning...</> : <><Scan size={15} /> Capture Face</>}
-                </button>
-              </div>
+                  {error && (
+                    <div style={{ color: '#dc2626', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '10px', padding: '10px 14px', fontSize: '0.85rem', marginBottom: '14px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                      <AlertCircle size={16} style={{ flexShrink: 0 }} /> {error}
+                    </div>
+                  )}
+
+                  <div style={{ background: '#f0fdf4', borderRadius: '10px', padding: '12px 14px', fontSize: '0.82rem', color: '#166534', marginBottom: '16px' }}>
+                    Position {teacher.name}'s face in the oval. Good lighting = better accuracy.
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
+                    <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+                    <button className="btn btn-primary" onClick={captureAndEnroll}
+                      disabled={capturing || !modelsLoaded || !stream}
+                      style={{ background: 'linear-gradient(135deg, #10b981, #059669)' }}>
+                      {capturing ? <><RefreshCw size={15} /> Scanning...</> : <><Scan size={15} /> Capture Face</>}
+                    </button>
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>
@@ -192,7 +308,10 @@ function FaceEnrollModal({ teacher, onClose, onSuccess }) {
   );
 }
 
+
+
 // ── MAIN TEACHERS PAGE ───────────────────────────────────────────────────────
+
 export default function Teachers() {
   const { can } = useAuthStore();
   const [teachers, setTeachers] = useState([]);

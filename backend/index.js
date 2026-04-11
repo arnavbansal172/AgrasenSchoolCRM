@@ -13,15 +13,19 @@
 
 require('dotenv').config({ path: __dirname + '/.env' });
 
-const express = require('express');
-const cors = require('cors');
-const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
+const express  = require('express');
+const cors     = require('cors');
+const bcrypt   = require('bcrypt');
+const jwt      = require('jsonwebtoken');
 const { Pool } = require('pg');
-const path = require('path');
+const path     = require('path');
+const fs       = require('fs');
+const http     = require('http');
+const https    = require('https');
 
-const app = express();
-const PORT = process.env.PORT || 3002;
+const app        = express();
+const PORT       = parseInt(process.env.PORT) || 3002;
+const PORT_HTTPS = parseInt(process.env.PORT_HTTPS) || 3443;
 const JWT_SECRET = process.env.JWT_SECRET || 'fallback_dev_secret_change_in_production';
 
 // ── DATABASE CONNECTION ─────────────────────────────────────────────────────
@@ -700,21 +704,43 @@ app.get('*', (req, res) => {
 });
 
 // ── SERVER START ─────────────────────────────────────────────────────────────
-app.listen(PORT, '0.0.0.0', async () => {
-  console.log('\n╔══════════════════════════════════════════╗');
-  console.log('║   SAVM ERP — API Server (PostgreSQL)     ║');
-  console.log('╚══════════════════════════════════════════╝');
-  console.log(`   Port         : ${PORT}`);
-  console.log(`   Local        : http://localhost:${PORT}`);
-  console.log(`   Network      : http://0.0.0.0:${PORT}`);
-  
-  // Test DB connection
+const SSL_KEY  = path.join(__dirname, 'ssl', 'server.key');
+const SSL_CERT = path.join(__dirname, 'ssl', 'server.crt');
+
+async function testDB() {
   try {
     await pool.query('SELECT 1');
-    console.log('   Database     : ✅ PostgreSQL connected');
+    console.log('   Database     : \u2705 PostgreSQL connected');
   } catch (err) {
-    console.error('   Database     : ❌ FAILED —', err.message);
-    console.error('   → Check .env file and ensure PostgreSQL is running!');
+    console.error('   Database     : \u274C FAILED \u2014', err.message);
+    console.error('   \u2192 Check .env file and ensure PostgreSQL is running!');
   }
+}
+
+// Always start plain HTTP (used by same-machine access / reverse proxy)
+http.createServer(app).listen(PORT, '0.0.0.0', async () => {
+  console.log('\n\u2554\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2557');
+  console.log('\u2551   SAVM ERP \u2014 API Server (PostgreSQL)     \u2551');
+  console.log('\u255A\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u255D');
+  console.log(`   HTTP (API)   : http://localhost:${PORT}`);
+  await testDB();
   console.log('');
 });
+
+// Start HTTPS if SSL cert exists (needed for phone camera via LAN)
+if (fs.existsSync(SSL_KEY) && fs.existsSync(SSL_CERT)) {
+  const sslOptions = {
+    key:  fs.readFileSync(SSL_KEY),
+    cert: fs.readFileSync(SSL_CERT),
+  };
+  https.createServer(sslOptions, app).listen(PORT_HTTPS, '0.0.0.0', () => {
+    console.log(`   HTTPS (LAN)  : https://0.0.0.0:${PORT_HTTPS}`);
+    console.log(`   Phone URL    : https://<PC-IP>:${PORT_HTTPS}`);
+    console.log('   \u26A0\uFE0F  Phones: Accept the "Not Secure" warning once, then camera works.');
+    console.log('');
+  });
+} else {
+  console.log(`   HTTPS        : Not configured (ssl/server.key + ssl/server.crt missing)`);
+  console.log(`   Run windows/gen-ssl.bat to enable HTTPS for phone camera access.`);
+  console.log('');
+}

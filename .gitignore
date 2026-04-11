@@ -17,6 +17,9 @@ dev-dist
 # The .env has database passwords and JWT secrets
 backend/.env
 
+# SSL certificates (private key must never be committed!)
+backend/ssl/
+
 # Database backups
 backups/
 
