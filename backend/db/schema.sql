@@ -197,14 +197,14 @@ CREATE INDEX idx_fee_payments_date ON fee_payments(date);
 CREATE TABLE salaries (
   id           SERIAL PRIMARY KEY,
   teacher_id   INTEGER NOT NULL REFERENCES teachers(id) ON DELETE CASCADE,
-  month        INTEGER NOT NULL CHECK (month BETWEEN 1 AND 12),
+  month        INTEGER NOT NULL CHECK (month BETWEEN 0 AND 11), -- JS 0-indexed (0=Jan, 11=Dec)
   year         INTEGER NOT NULL,
   days_worked  INTEGER NOT NULL DEFAULT 0,
   working_days INTEGER NOT NULL DEFAULT 26,
   amount       INTEGER NOT NULL DEFAULT 0,
   paid         BOOLEAN NOT NULL DEFAULT FALSE,
   paid_at      TIMESTAMPTZ,
-  UNIQUE (teacher_id, month, year) -- Prevent duplicate salary records
+  UNIQUE (teacher_id, month, year)
 );
 
 CREATE INDEX idx_salaries_period ON salaries(year, month);
@@ -262,9 +262,10 @@ CREATE TABLE procurements (
   requested_by    VARCHAR(150),
   requested_by_id INTEGER REFERENCES staff_users(id),
   item            VARCHAR(250) NOT NULL,
+  category        VARCHAR(50) NOT NULL DEFAULT 'Other',
   estimated_cost  INTEGER NOT NULL DEFAULT 0,
-  status          VARCHAR(30) NOT NULL DEFAULT 'Pending'
-                    CHECK (status IN ('Pending','Approved','Rejected','Purchased')),
+  status          VARCHAR(30) NOT NULL DEFAULT 'Wishlist'
+                    CHECK (status IN ('Wishlist','Approved','Rejected','Purchased')),
   approved_by     VARCHAR(150),
   date            DATE NOT NULL DEFAULT CURRENT_DATE,
   notes           TEXT,

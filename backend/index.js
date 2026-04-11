@@ -554,6 +554,43 @@ app.post('/api/salaries', authenticate, requireRole('super_admin', 'admin'), asy
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Bulk-generate salaries for all active teachers from attendance data
+app.post('/api/salaries/generate', authenticate, requireRole('super_admin', 'admin'), async (req, res) => {
+  const { month, year, workingDays } = req.body;
+  try {
+    // Get all active teachers
+    const teachersRes = await pool.query("SELECT id, name, base_pay, employee_id FROM teachers WHERE status = 'Active'");
+    const teachers = teachersRes.rows;
+
+    // Build date range for the month
+    const monthNum  = parseInt(month) + 1; // JS month is 0-indexed
+    const pad       = n => String(n).padStart(2, '0');
+    const startDate = `${year}-${pad(monthNum)}-01`;
+    const lastDay   = new Date(year, monthNum, 0).getDate();
+    const endDate   = `${year}-${pad(monthNum)}-${pad(lastDay)}`;
+
+    const results = [];
+    for (const teacher of teachers) {
+      // Count present days for this teacher in the month
+      const attendRes = await pool.query(
+        `SELECT COUNT(*) as cnt FROM teacher_attendance WHERE teacher_id=$1 AND date BETWEEN $2 AND $3 AND status='Present'`,
+        [teacher.id, startDate, endDate]
+      );
+      const daysPresent = parseInt(attendRes.rows[0].cnt) || 0;
+      const salary      = workingDays > 0 ? Math.round((teacher.base_pay || 0) * daysPresent / workingDays) : 0;
+
+      const row = await pool.query(`
+        INSERT INTO salaries (teacher_id, month, year, days_worked, working_days, amount)
+        VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (teacher_id, month, year) DO NOTHING
+        RETURNING *
+      `, [teacher.id, parseInt(month), parseInt(year), daysPresent, workingDays || 26, salary]);
+      results.push({ teacherName: teacher.name, daysPresent, salary, inserted: row.rowCount > 0 });
+    }
+    res.json({ ok: true, results });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.patch('/api/salaries/:id/mark-paid', authenticate, requireRole('super_admin', 'admin'), async (req, res) => {
   try {
     await pool.query('UPDATE salaries SET paid = TRUE, paid_at = NOW() WHERE id = $1', [req.params.id]);
@@ -643,13 +680,25 @@ app.get('/api/timetable', authenticate, async (req, res) => {
   res.json(result.rows);
 });
 app.post('/api/timetable', authenticate, requireRole('super_admin', 'admin', 'teacher'), async (req, res) => {
-  const { grade, day, period, subject, teacherId } = req.body;
+  const { grade, day, period, subject, teacherName } = req.body;
+  // Look up teacher_id by name (optional — null is valid for free periods)
+  let teacherId = null;
+  if (teacherName) {
+    const t = await pool.query('SELECT id FROM teachers WHERE name=$1 LIMIT 1', [teacherName]);
+    if (t.rows.length) teacherId = t.rows[0].id;
+  }
   const result = await pool.query(`
     INSERT INTO timetable (grade, day, period, subject, teacher_id) VALUES ($1, $2, $3, $4, $5)
     ON CONFLICT (grade, day, period) DO UPDATE SET subject=$4, teacher_id=$5
     RETURNING *
-  `, [grade, day, period, subject || null, teacherId || null]);
+  `, [grade, day, period, subject || null, teacherId]);
   res.json(result.rows[0]);
+});
+
+app.post('/api/timetable/clear', authenticate, requireRole('super_admin', 'admin', 'teacher'), async (req, res) => {
+  const { grade, day, period } = req.body;
+  await pool.query('DELETE FROM timetable WHERE grade=$1 AND day=$2 AND period=$3', [grade, day, period]);
+  res.json({ ok: true });
 });
 
 // Procurements
@@ -658,10 +707,10 @@ app.get('/api/procurements', authenticate, requireRole('super_admin', 'admin'), 
   res.json(result.rows);
 });
 app.post('/api/procurements', authenticate, async (req, res) => {
-  const { item, estimatedCost, notes } = req.body;
+  const { item, estimatedCost, notes, category } = req.body;
   const result = await pool.query(
-    'INSERT INTO procurements (requested_by, requested_by_id, item, estimated_cost, notes) VALUES ($1, $2, $3, $4, $5) RETURNING *',
-    [req.user.name, req.user.id, item, parseInt(estimatedCost) || 0, notes || null]
+    'INSERT INTO procurements (requested_by, requested_by_id, item, estimated_cost, notes, category) VALUES ($1, $2, $3, $4, $5, $6) RETURNING *',
+    [req.user.name, req.user.id, item, parseInt(estimatedCost) || 0, notes || null, category || 'Other']
   );
   res.status(201).json(result.rows[0]);
 });
@@ -677,17 +726,19 @@ app.patch('/api/procurements/:id', authenticate, requireRole('super_admin', 'adm
 
 app.get('/api/reports/summary', authenticate, async (req, res) => {
   try {
-    const [students, teachers, fees, attendance] = await Promise.all([
+    const [students, teachers, fees, attendance, resultsCount] = await Promise.all([
       pool.query("SELECT admission_status, COUNT(*) FROM students GROUP BY admission_status"),
       pool.query("SELECT status, COUNT(*) FROM teachers GROUP BY status"),
       pool.query("SELECT SUM(amount) as total FROM fee_payments WHERE EXTRACT(YEAR FROM date) = EXTRACT(YEAR FROM NOW())"),
       pool.query("SELECT COUNT(*) as present FROM teacher_attendance WHERE date = CURRENT_DATE AND status = 'Present'"),
+      pool.query("SELECT COUNT(*) AS cnt FROM results"),
     ]);
     res.json({
-      students: students.rows,
-      teachers: teachers.rows,
-      feesThisYear: fees.rows[0]?.total || 0,
+      students:             students.rows,
+      teachers:             teachers.rows,
+      feesThisYear:         fees.rows[0]?.total || 0,
       teachersPresentToday: attendance.rows[0]?.present || 0,
+      resultsCount:         parseInt(resultsCount.rows[0]?.cnt) || 0,
     });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
