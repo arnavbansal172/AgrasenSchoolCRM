@@ -1,130 +1,146 @@
-import { useState } from 'react';
-import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '../../db/db';
+import { useState, useEffect, useCallback } from 'react';
+import api from '../../lib/api';
 import { useAuthStore } from '../../store/authStore';
-import { Plus, X, CalendarDays, Trash2 } from 'lucide-react';
+import { CalendarDays, Plus, X, Trash2 } from 'lucide-react';
 
 export default function Events() {
-  const { can, user } = useAuthStore();
+  const { can } = useAuthStore();
+  const [events, setEvents] = useState([]);
+  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ date: '', title: '', description: '' });
+  const [form, setForm] = useState({ title: '', date: new Date().toISOString().split('T')[0], description: '' });
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
 
-  const canCreate = can('events.create');
+  const canManage = can('events.manage');
 
-  const todayStr = new Date().toISOString().split('T')[0];
-  const events   = useLiveQuery(() => db.events.orderBy('date').toArray()) || [];
+  const load = useCallback(async () => {
+    try {
+      const data = await api.events.list();
+      setEvents([...data].sort((a, b) => new Date(a.date) - new Date(b.date)));
+    } catch (err) { setError(err.message); }
+    finally { setLoading(false); }
+  }, []);
 
-  const upcoming = events.filter(e => e.date >= todayStr);
-  const past     = events.filter(e => e.date < todayStr);
+  useEffect(() => { load(); }, [load]);
 
-  const handleAdd = async (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
     try {
-      await db.events.add({ ...form, createdBy: user?.name, createdAt: new Date().toISOString() });
-      setForm({ date: '', title: '', description: '' });
+      await api.events.create(form);
+      setForm({ title: '', date: new Date().toISOString().split('T')[0], description: '' });
       setShowForm(false);
-    } finally {
-      setSaving(false);
-    }
+      await load();
+    } catch (err) { setError(err.message); }
+    finally { setSaving(false); }
   };
 
   const handleDelete = async (id) => {
-    if (window.confirm('Delete this event?')) await db.events.delete(id);
+    if (!confirm('Delete this event?')) return;
+    try { await api.events.delete(id); await load(); }
+    catch (err) { setError(err.message); }
   };
 
-  const EventCard = ({ event }) => {
-    const isToday = event.date === todayStr;
-    return (
-      <div key={event.id} style={{ display: 'flex', gap: '14px', alignItems: 'flex-start', padding: '14px 16px', background: isToday ? '#eef2ff' : 'white', borderRadius: '12px', border: `1px solid ${isToday ? '#c7d2fe' : '#e2e8f0'}` }}>
-        <div style={{ background: isToday ? '#4f46e5' : '#f8fafc', border: `1px solid ${isToday ? '#4f46e5' : '#e2e8f0'}`, borderRadius: '12px', padding: '8px 12px', textAlign: 'center', minWidth: '52px', flexShrink: 0 }}>
-          <div style={{ fontSize: '0.65rem', fontWeight: 700, color: isToday ? 'rgba(255,255,255,0.7)' : '#94a3b8', textTransform: 'uppercase' }}>
-            {new Date(event.date).toLocaleDateString('en-IN', { month: 'short' })}
-          </div>
-          <div style={{ fontSize: '1.2rem', fontWeight: 800, color: isToday ? 'white' : '#1e293b', fontFamily: 'Lexend, sans-serif', lineHeight: 1.1 }}>
-            {new Date(event.date).getDate()}
-          </div>
-          <div style={{ fontSize: '0.6rem', fontWeight: 700, color: isToday ? 'rgba(255,255,255,0.7)' : '#94a3b8' }}>
-            {new Date(event.date).toLocaleDateString('en-IN', { weekday: 'short' }).toUpperCase()}
-          </div>
-        </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-            <div>
-              {isToday && <span style={{ display: 'inline-block', background: '#4f46e5', color: 'white', borderRadius: '999px', fontSize: '0.65rem', fontWeight: 700, padding: '1px 8px', marginBottom: '4px' }}>TODAY</span>}
-              <div style={{ fontWeight: 700, color: 'var(--text-primary)', fontSize: '0.95rem' }}>{event.title}</div>
-              {event.description && <div style={{ fontSize: '0.82rem', color: '#64748b', marginTop: '3px' }}>{event.description}</div>}
-              <div style={{ fontSize: '0.72rem', color: '#94a3b8', marginTop: '6px' }}>Added by {event.createdBy}</div>
-            </div>
-            {canCreate && (
-              <button className="btn btn-ghost btn-icon" onClick={() => handleDelete(event.id)} title="Delete event">
-                <Trash2 size={14} color="#dc2626" />
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-    );
-  };
+  const todayStr = new Date().toISOString().split('T')[0];
+  const upcoming = events.filter(e => e.date >= todayStr);
+  const past     = events.filter(e => e.date < todayStr);
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px' }}>
       <div className="page-header">
         <div>
-          <h1 className="page-title">Events Calendar</h1>
-          <p className="page-subtitle">Full-day events override the regular timetable and appear on the dashboard</p>
+          <h1 className="page-title">School Events</h1>
+          <p className="page-subtitle">{upcoming.length} upcoming · {past.length} past</p>
         </div>
-        {canCreate && (
+        {canManage && (
           <button className="btn btn-primary" onClick={() => setShowForm(s => !s)}>
             {showForm ? <X size={16} /> : <><Plus size={16} /> Add Event</>}
           </button>
         )}
       </div>
 
+      {error && <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: '10px', padding: '12px', color: '#dc2626', fontSize: '0.875rem' }}>⚠️ {error}</div>}
+
       {showForm && (
         <div className="card animate-in" style={{ padding: '24px' }}>
-          <h3 style={{ fontWeight: 700, marginBottom: '16px' }}>New Event</h3>
-          <form onSubmit={handleAdd}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '14px', marginBottom: '14px' }}>
-              <div>
-                <label className="form-label">Date *</label>
-                <input required className="form-input" type="date" value={form.date} onChange={e => setForm(p => ({ ...p, date: e.target.value }))} />
-              </div>
+          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '14px' }}>
               <div>
                 <label className="form-label">Event Title *</label>
-                <input required className="form-input" value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Independence Day" />
+                <input required className="form-input" value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="e.g. Annual Sports Day" />
               </div>
               <div>
-                <label className="form-label">Description</label>
-                <input className="form-input" value={form.description} onChange={e => setForm(p => ({ ...p, description: e.target.value }))} placeholder="Optional note" />
+                <label className="form-label">Date *</label>
+                <input required type="date" className="form-input" value={form.date} onChange={e => setForm(p => ({ ...p, date: e.target.value }))} />
               </div>
+            </div>
+            <div>
+              <label className="form-label">Description</label>
+              <textarea className="form-textarea" value={form.description} onChange={e => setForm(p => ({ ...p, description: e.target.value }))} placeholder="Details..." rows={2} />
             </div>
             <div style={{ display: 'flex', gap: '10px', justifyContent: 'flex-end' }}>
               <button type="button" className="btn btn-ghost" onClick={() => setShowForm(false)}>Cancel</button>
-              <button type="submit" className="btn btn-primary" disabled={saving}>Add Event</button>
+              <button type="submit" className="btn btn-primary" disabled={saving}>{saving ? 'Saving...' : 'Save Event'}</button>
             </div>
           </form>
         </div>
       )}
 
-      {/* Upcoming */}
-      <div>
-        <h3 style={{ fontWeight: 700, marginBottom: '12px', fontSize: '0.95rem', color: 'var(--text-secondary)' }}>
-          <CalendarDays size={15} style={{ display: 'inline', marginRight: '6px', verticalAlign: 'middle' }} />
-          Upcoming Events ({upcoming.length})
-        </h3>
-        {upcoming.length === 0
-          ? <div className="card" style={{ padding: '32px', textAlign: 'center', color: '#94a3b8', fontSize: '0.875rem' }}>No upcoming events scheduled.</div>
-          : <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>{upcoming.map(e => <EventCard key={e.id} event={e} />)}</div>
-        }
-      </div>
-
-      {past.length > 0 && (
-        <div>
-          <h3 style={{ fontWeight: 700, marginBottom: '12px', fontSize: '0.95rem', color: '#94a3b8' }}>Past Events ({past.length})</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', opacity: 0.6 }}>{past.reverse().slice(0, 5).map(e => <EventCard key={e.id} event={e} />)}</div>
-        </div>
+      {loading ? (
+        <div style={{ textAlign: 'center', padding: '48px', color: '#94a3b8' }}>Loading...</div>
+      ) : (
+        <>
+          {upcoming.length === 0 && past.length === 0 && (
+            <div className="card" style={{ padding: '48px', textAlign: 'center' }}>
+              <CalendarDays size={32} color="#e2e8f0" style={{ marginBottom: '12px' }} />
+              <div style={{ color: '#94a3b8', fontWeight: 600 }}>No events scheduled</div>
+            </div>
+          )}
+          {upcoming.length > 0 && (
+            <div>
+              <h3 style={{ fontSize: '0.85rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px' }}>Upcoming</h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                {upcoming.map(ev => (
+                  <div key={ev.id} className="card" style={{ padding: '16px 20px', display: 'flex', gap: '16px', alignItems: 'center', borderLeft: ev.date === todayStr ? '4px solid #4f46e5' : '4px solid transparent' }}>
+                    <div style={{ background: ev.date === todayStr ? '#eef2ff' : '#f1f5f9', borderRadius: '10px', padding: '8px 12px', textAlign: 'center', minWidth: '52px', flexShrink: 0 }}>
+                      <div style={{ fontSize: '0.65rem', fontWeight: 700, color: '#94a3b8', textTransform: 'uppercase' }}>{new Date(ev.date + 'T00:00').toLocaleDateString('en-IN', { month: 'short' })}</div>
+                      <div style={{ fontSize: '1.2rem', fontWeight: 900, color: ev.date === todayStr ? '#4f46e5' : '#1e293b', fontFamily: 'Lexend, sans-serif' }}>{new Date(ev.date + 'T00:00').getDate()}</div>
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 700 }}>{ev.title}</div>
+                      {ev.description && <div style={{ fontSize: '0.82rem', color: '#64748b', marginTop: '2px' }}>{ev.description}</div>}
+                      {ev.date === todayStr && <span style={{ fontSize: '0.65rem', fontWeight: 800, background: '#eef2ff', color: '#4f46e5', borderRadius: '999px', padding: '2px 8px', marginTop: '4px', display: 'inline-block' }}>TODAY</span>}
+                    </div>
+                    {canManage && (
+                      <button className="btn btn-ghost btn-icon btn-sm" onClick={() => handleDelete(ev.id)} style={{ color: '#dc2626', flexShrink: 0 }}>
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+          {past.length > 0 && (
+            <div>
+              <h3 style={{ fontSize: '0.85rem', fontWeight: 700, color: '#cbd5e1', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: '12px' }}>Past Events</h3>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                {[...past].reverse().map(ev => (
+                  <div key={ev.id} className="card" style={{ padding: '12px 20px', display: 'flex', gap: '16px', alignItems: 'center', opacity: 0.7 }}>
+                    <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#94a3b8', minWidth: '80px' }}>{new Date(ev.date + 'T00:00').toLocaleDateString('en-IN')}</div>
+                    <div style={{ fontWeight: 600, color: '#475569', flex: 1 }}>{ev.title}</div>
+                    {canManage && (
+                      <button className="btn btn-ghost btn-icon btn-sm" onClick={() => handleDelete(ev.id)} style={{ color: '#dc2626' }}>
+                        <Trash2 size={13} />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );

@@ -1,4 +1,5 @@
-import { db } from '../db/db';
+// GR generation is now handled server-side via PostgreSQL atomic function.
+// This file only exports pure utilities used by the frontend.
 
 /**
  * GRADE CONSTANTS
