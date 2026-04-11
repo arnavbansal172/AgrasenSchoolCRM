@@ -49,6 +49,8 @@ export default function TeacherFaceAttendance() {
   // ── Scan state ──────────────────────────────────────────────────────────
   const [scanning, setScanning] = useState(false);
   const [result, setResult] = useState(null); // { type: 'success'|'error', teacher, confidence, message }
+  // ── Confirm prompt state (shown when 50% ≤ confidence < 75%) ──────────
+  const [confirmPending, setConfirmPending] = useState(null); // { teacher, confidence, distance } pending human confirmation
 
   // ── Today's attendance log (live from API) ──────────────────────────────
   const [todayLogs, setTodayLogs] = useState([]);
@@ -198,33 +200,59 @@ export default function TeacherFaceAttendance() {
       // Convert distance to confidence percentage (lower distance = higher confidence)
       const confidence = Math.round((1 - match.distance) * 100);
 
-      // Log attendance to PostgreSQL
-      await api.teacherAttendance.log({
-        teacherId: matchedTeacher.id,
-        date: todayStr,
-        status: 'Present',
-        method: 'Face Recognition',
-        matchScore: (1 - match.distance).toFixed(3),
-      });
+      // ── CONFIDENCE TIERS ────────────────────────────────────────────────
+      // ≥ 75% → Auto-confirm, log immediately (high confidence)
+      // 50–74% → Show confirmation prompt (teacher must say "Yes, this is me")
+      // < 50% → Already rejected by FaceMatcher (label = 'unknown')
 
-      setResult({
-        type: 'success',
-        teacher: matchedTeacher,
-        confidence,
-        distance: match.distance,
-      });
-
-      // Refresh today's log
-      await loadTodayLogs();
-
-      // Auto-reset after 5 seconds
-      setTimeout(() => setResult(null), 5000);
+      if (confidence >= 75) {
+        // HIGH CONFIDENCE — auto-log without asking
+        await logAttendance(matchedTeacher, confidence, match.distance, 'Face Recognition');
+        await loadTodayLogs();
+        setResult({ type: 'success', teacher: matchedTeacher, confidence, distance: match.distance, autoConfirmed: true });
+        setTimeout(() => setResult(null), 5000);
+      } else {
+        // LOW CONFIDENCE (50–74%) — ask teacher to confirm their identity
+        setConfirmPending({ teacher: matchedTeacher, confidence, distance: match.distance });
+      }
     } catch (err) {
       console.error('Face scan error:', err);
       setResult({ type: 'error', message: `Scan failed: ${err.message}` });
     } finally {
       setScanning(false);
     }
+  };
+
+  // ── SHARED ATTENDANCE LOGGER ─────────────────────────────────────────────
+  const logAttendance = async (teacher, confidence, distance, method) => {
+    await api.teacherAttendance.log({
+      teacherId: teacher.id,
+      date: todayStr,
+      status: 'Present',
+      method,
+      matchScore: (1 - distance).toFixed(3),
+    });
+  };
+
+  // ── HUMAN CONFIRMATION — Teacher clicks "Yes this is me" ─────────────────
+  const handleConfirmYes = async () => {
+    if (!confirmPending) return;
+    const { teacher, confidence, distance } = confirmPending;
+    try {
+      await logAttendance(teacher, confidence, distance, 'Face Recognition (Confirmed)');
+      await loadTodayLogs();
+      setResult({ type: 'success', teacher, confidence, distance, manualConfirmed: true });
+      setTimeout(() => setResult(null), 5000);
+    } catch (err) {
+      setResult({ type: 'error', message: `Could not log attendance: ${err.message}` });
+    } finally {
+      setConfirmPending(null);
+    }
+  };
+
+  const handleConfirmNo = () => {
+    setConfirmPending(null);
+    setResult({ type: 'error', message: 'Identity not confirmed. Please try scanning again in better lighting.' });
   };
 
   // ── MANUAL ATTENDANCE OVERRIDE ───────────────────────────────────────────
@@ -357,6 +385,44 @@ export default function TeacherFaceAttendance() {
             </div>
           )}
 
+          {/* ── CONFIRM IDENTITY OVERLAY (confidence 50–74%) ── */}
+          {confirmPending && (
+            <div style={{
+              position: 'absolute', inset: 0, zIndex: 40,
+              background: 'rgba(15,23,42,0.88)',
+              backdropFilter: 'blur(8px)',
+              display: 'flex', flexDirection: 'column',
+              alignItems: 'center', justifyContent: 'center',
+              padding: '24px', gap: '16px',
+              animation: 'slideUp 0.35s ease',
+            }}>
+              <div style={{ background: '#fef3c7', color: '#92400e', borderRadius: '999px', padding: '4px 16px', fontSize: '0.72rem', fontWeight: 800, letterSpacing: '0.06em' }}>
+                ⚠️ LOW CONFIDENCE — {confirmPending.confidence}% MATCH
+              </div>
+              <div style={{ textAlign: 'center', color: 'white' }}>
+                <div style={{ fontSize: '0.8rem', opacity: 0.7, marginBottom: '6px' }}>System thinks this is:</div>
+                <div style={{ fontSize: '1.6rem', fontWeight: 900, fontFamily: 'Lexend, sans-serif', lineHeight: 1.1 }}>
+                  {confirmPending.teacher.name}
+                </div>
+                {confirmPending.teacher.employee_id && (
+                  <div style={{ fontSize: '0.8rem', opacity: 0.6, marginTop: '4px' }}>ID: {confirmPending.teacher.employee_id}</div>
+                )}
+              </div>
+              <div style={{ color: 'rgba(199,210,254,0.9)', fontSize: '1rem', fontWeight: 600 }}>Is this you?</div>
+              <div style={{ display: 'flex', gap: '12px' }}>
+                <button onClick={handleConfirmNo} style={{ padding: '14px 28px', borderRadius: '999px', border: '2px solid rgba(255,255,255,0.2)', background: 'rgba(255,255,255,0.08)', color: 'white', fontWeight: 800, fontSize: '1rem', cursor: 'pointer' }}>
+                  ✗ Not Me
+                </button>
+                <button onClick={handleConfirmYes} style={{ padding: '14px 28px', borderRadius: '999px', border: 'none', background: 'linear-gradient(135deg, #10b981, #059669)', color: 'white', fontWeight: 800, fontSize: '1rem', cursor: 'pointer', boxShadow: '0 8px 20px rgba(16,185,129,0.5)' }}>
+                  ✓ Yes, This Is Me
+                </button>
+              </div>
+              <div style={{ fontSize: '0.72rem', color: 'rgba(199,210,254,0.4)', textAlign: 'center', maxWidth: '280px' }}>
+                Try again in better lighting for automatic recognition next time.
+              </div>
+            </div>
+          )}
+
           {/* SUCCESS OVERLAY */}
           {result?.type === 'success' && (
             <div style={{
@@ -375,7 +441,7 @@ export default function TeacherFaceAttendance() {
               </div>
               <div style={{ flex: 1 }}>
                 <div style={{ fontSize: '0.7rem', fontWeight: 800, opacity: 0.8, textTransform: 'uppercase', letterSpacing: '0.06em' }}>
-                  ✓ Identity Verified
+                  {result.manualConfirmed ? '✓ Confirmed by Teacher' : '✓ Identity Verified'}
                 </div>
                 <div style={{ fontSize: '1.2rem', fontWeight: 900, fontFamily: 'Lexend, sans-serif' }}>
                   {result.teacher.name}
